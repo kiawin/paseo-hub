@@ -1926,7 +1926,10 @@ export class PaseoHub {
     return daemon.slug;
   }
 
-  /** Waits until a run's dispatch settles: its agent is attached, or its execution failed. */
+  /**
+   * Waits until a run's dispatch settles: its execution failed, or its agent is attached and the
+   * execution has left `spawning`. The agent is recorded before the status moves to `running`.
+   */
   async settledRunDispatch(triggerRunId: string): Promise<{ status: string; result: unknown }> {
     const [execution] = await retryUntil(
       async () =>
@@ -1949,7 +1952,10 @@ export class PaseoHub {
             ),
           ),
       (rows) =>
-        rows.length === 1 && rows.every((row) => row.status === "failed" || row.agentId !== null),
+        rows.length === 1 &&
+        rows.every(
+          (row) => row.status === "failed" || (row.agentId !== null && row.status !== "spawning"),
+        ),
     );
     if (execution === undefined) throw new Error("Run execution unavailable");
     return { status: execution.status, result: execution.result };
