@@ -17,6 +17,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${PASEO_HUB_FORK_SRC:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)}"
 FORK_REPO="${PASEO_HUB_FORK_REPO:-kiawin/paseo-hub}"
 FORK_ID="${PASEO_HUB_FORK_ID:-kiawin}"
+# Vitest defaults to one worker per core. On a workstation, that many workers
+# each starting Postgres containers starve each other and time out; half the
+# cores keeps the suite reliable. Accepts a count or a percentage.
+TEST_WORKERS="${PASEO_HUB_FORK_TEST_WORKERS:-50%}"
 # The lockfile resolves every package on the public registry. A user-level
 # registry (a private mirror with an expired token, say) would break npm ci.
 export npm_config_registry="${PASEO_HUB_FORK_NPM_REGISTRY:-https://registry.npmjs.org/}"
@@ -125,8 +129,8 @@ npm ci --no-audit --no-fund
 log "build"
 npm run build
 
-log "test"
-npm test
+log "test (max $TEST_WORKERS workers)"
+npm test -- --maxWorkers="$TEST_WORKERS"
 
 # ---------------------------------------------------------------------------
 # 4. Pack
