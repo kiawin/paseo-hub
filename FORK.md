@@ -6,13 +6,45 @@ nothing to npm, GHCR, or Fly.
 
 ## Remotes
 
-| Remote     | Repository         | Role                                       |
-| ---------- | ------------------ | ------------------------------------------ |
-| `origin`   | `kiawin/paseo-hub` | The fork. Pull requests merge into `main`. |
-| `upstream` | `getpaseo/hub`     | The source. Merge `upstream/main` to sync. |
+| Remote     | Repository         | Role                                                        |
+| ---------- | ------------------ | ----------------------------------------------------------- |
+| `origin`   | `kiawin/paseo-hub` | The fork. Fork changes are squash-merged into `main`.       |
+| `upstream` | `getpaseo/hub`     | The source. `main` is rebased onto `upstream/main` to sync. |
 
 Every fork change should be small enough to send upstream as a pull request. Once upstream merges
 it, the next sync drops the fork's copy.
+
+## Sync with upstream
+
+`main` is always `upstream/main` plus a few squashed fork commits on top: linear, with no merge
+commits. A sync keeps that shape by rebasing, never by merging.
+
+```sh
+git fetch upstream
+git fetch origin
+git switch -C sync/kiawin-paseo-hub origin/main
+git rebase upstream/main
+git push --force-with-lease origin sync/kiawin-paseo-hub
+gh pr create --repo kiawin/paseo-hub --base main --head sync/kiawin-paseo-hub \
+  --title "Sync getpaseo/hub - $(date +%F)"
+```
+
+- Stop if `upstream/main` has not moved since the last sync.
+- Resolve each conflict inside the fork commit being replayed, with the smallest edit. Do not add
+  a separate conflict-resolution or merge commit, and do not run a formatter while resolving.
+- A fork commit the rebase drops means upstream accepted it. That is the goal.
+- Always pass `--repo kiawin/paseo-hub` to `gh`; otherwise it targets the upstream parent.
+
+Review the pull request, then land it with a force-push, not the Merge button. The branch is
+`main` rebased, not a superset of it, so merging would add a merge commit and a duplicate of every
+rebased commit:
+
+```sh
+git push --force-with-lease origin origin/sync/kiawin-paseo-hub:main
+```
+
+A daily Paseo schedule on the homelab host runs this sync and opens or updates the pull request.
+It never pushes `main` and never cuts a release.
 
 ## Upstream-only workflows
 
