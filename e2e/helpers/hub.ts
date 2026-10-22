@@ -163,6 +163,7 @@ type StartSourcePaseo = () => Promise<SourcePaseo>;
 export class PaseoHub {
   private readonly users = new Map<string, HubUser>();
   private readonly hubCredentials = new Map<string, string>();
+  private readonly browserDaemons: ContractDaemon[] = [];
   private sourcePaseo: SourcePaseo | undefined;
 
   constructor(
@@ -1925,6 +1926,74 @@ export class PaseoHub {
     return daemon.slug;
   }
 
+  /** Waits until a run's dispatch settles: its agent is attached, or its execution failed. */
+  async settledRunDispatch(triggerRunId: string): Promise<{ status: string; result: unknown }> {
+    const [execution] = await retryUntil(
+      async () =>
+        z
+          .array(
+            z.object({
+              status: z.string(),
+              agentId: z.string().nullable(),
+              result: z.unknown(),
+            }),
+          )
+          .parse(
+            await this.queryDatabaseRows(
+              this.primary,
+              `select execution.status, execution.daemon_agent_id as "agentId", execution.result
+                 from agent_executions execution
+                 join workflow_step_runs step on step.agent_execution_id = execution.id
+                 where step.trigger_run_id = $1`,
+              [triggerRunId],
+            ),
+          ),
+      (rows) =>
+        rows.length === 1 && rows.every((row) => row.status === "failed" || row.agentId !== null),
+    );
+    if (execution === undefined) throw new Error("Run execution unavailable");
+    return { status: execution.status, result: execution.result };
+  }
+
+  /** Finishes a continuation run the way its agent would: through its session's finish tool. */
+  async finishSessionRun(triggerRunId: string): Promise<void> {
+    const [execution] = await retryUntil(
+      async () =>
+        z.array(z.object({ id: z.string().uuid(), sessionId: z.string().uuid() })).parse(
+          await this.queryDatabaseRows(
+            this.primary,
+            `select execution.id, execution.agent_session_id as "sessionId"
+               from agent_executions execution
+               join workflow_step_runs step on step.agent_execution_id = execution.id
+               where step.trigger_run_id = $1 and execution.agent_session_id is not null`,
+            [triggerRunId],
+          ),
+        ),
+      (rows) => rows.length === 1,
+    );
+    if (execution === undefined) throw new Error("Session execution unavailable");
+    const daemon = this.browserDaemons.at(-1);
+    if (daemon === undefined) throw new Error("No daemon is connected");
+    // The fake daemon keys a session agent's capability by the session in its MCP URL.
+    const capability = await daemon.executionCapability(execution.sessionId);
+    const client = new McpClient({ name: "paseo-hub-browser-contract", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(capability.url), {
+      requestInit: { headers: capability.headers },
+    });
+    try {
+      // @ts-expect-error upstream SDK exactOptionalPropertyTypes mismatch
+      await client.connect(transport);
+      const result = await client.callTool({
+        name: "finish_execution",
+        arguments: { executionId: execution.id },
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toEqual([{ type: "text", text: "Execution finished" }]);
+    } finally {
+      await client.close();
+    }
+  }
+
   /** A finished or running run of a saved trigger, received `minutesAgo` minutes ago. */
   async seedTriggerRun(
     triggerName: string,
@@ -2166,6 +2235,7 @@ export class PaseoHub {
     const daemon = new ContractDaemon(this.primary, this.requests);
     await daemon.enroll(enrollmentToken);
     await daemon.connect();
+    this.browserDaemons.push(daemon);
     return daemon;
   }
 
