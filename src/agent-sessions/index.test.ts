@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { Writable } from "node:stream";
 import { expect, test } from "vitest";
 import { AgentSessions } from "./index.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import type { Database } from "../db/types.js";
+import { createLogger } from "../logger.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../execution-capabilities/outputs.js";
 import { createExecutionCapabilityServer } from "../execution-capabilities/server.js";
 import type { AgentConnection, AgentSnapshot } from "../daemons/agents/index.js";
@@ -51,8 +54,7 @@ class TestAgents implements AgentConnection {
   }
 }
 
-async function fixture(now = Date.now) {
-  const database = createMemoryDatabase();
+async function fixture(now = Date.now, database: Database = createMemoryDatabase()) {
   const connection = new TestAgents();
   const outputs = new OutputExecutorRegistry();
   const replies: { executionId: string; context: unknown }[] = [];
@@ -63,7 +65,15 @@ async function fixture(now = Date.now) {
       replies.push({ executionId: input.agentExecutionId, context: input.outputContext });
     },
   });
-  const sessions = new AgentSessions(database, "secret", "https://hub.test", outputs, now);
+  const logs: unknown[] = [];
+  const stream = new Writable({
+    write(chunk: Buffer, _encoding, done) {
+      logs.push(JSON.parse(chunk.toString()));
+      done();
+    },
+  });
+  const logger = createLogger(stream);
+  const sessions = new AgentSessions(database, "secret", "https://hub.test", outputs, now, logger);
   const capabilities = createExecutionCapabilityServer({
     database,
     outputs,
@@ -162,7 +172,7 @@ async function fixture(now = Date.now) {
     const result: unknown = await response.json();
     return result;
   }
-  return { database, connection, sessions, replies, arrival, execution, call };
+  return { database, connection, sessions, replies, logs, arrival, execution, call };
 }
 
 test("same-key arrivals share an agent; an earlier completion cannot archive newer work", async () => {
@@ -213,7 +223,7 @@ test("session tools keep each arrival's destination and reject stale or foreign 
   ).toMatchObject({ result: { isError: true } });
 });
 
-test("new-agent policy isolates arrivals and incompatible targets fail without replacement", async () => {
+test("new-agent policy isolates arrivals and incompatible targets fail while the agent is busy", async () => {
   const f = await fixture();
   const a = await f.arrival(null);
   const b = await f.arrival(null);
@@ -223,6 +233,55 @@ test("new-agent policy isolates arrivals and incompatible targets fail without r
   const changed = await f.arrival("conversation", "different-daemon");
   await expect(changed.dispatch()).rejects.toThrow("Continuation settings differ");
   expect(f.connection.creates).toHaveLength(3);
+});
+
+test("incompatible settings replace an idle agent and detach the previous session", async () => {
+  const f = await fixture();
+  const first = await f.arrival();
+  const original = await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "succeeded");
+  const previous = (await f.execution(first.executionId)).agentSessionId!;
+  const changed = await f.arrival("conversation", "different-daemon");
+  const replacement = await changed.dispatch();
+  expect(replacement).toMatchObject({ action: "created" });
+  expect(replacement.agentId).not.toBe(original.agentId);
+  expect(f.connection.creates).toHaveLength(2);
+  expect(await f.database.findAgentSession(previous)).toMatchObject({ continuationKey: null });
+  const current = (await f.execution(changed.executionId)).agentSessionId!;
+  expect(current).not.toBe(previous);
+  const keyed = await f.database.findAgentSessionByKey("project", "conversation");
+  expect(keyed?.id).toBe(current);
+  expect(f.logs).toEqual([
+    expect.objectContaining({
+      level: 30,
+      previousSessionId: previous,
+      sessionId: current,
+      continuation: "conversation",
+      msg: "replaced agent session with incompatible continuation settings",
+    }),
+  ]);
+  const next = await f.arrival("conversation", "different-daemon");
+  const continued = await next.dispatch();
+  expect(continued).toMatchObject({ agentId: replacement.agentId, action: "continued" });
+});
+
+test("a session that keeps changing under dispatch fails instead of retrying forever", async () => {
+  const database = createMemoryDatabase();
+  const save = database.saveAgentSession.bind(database);
+  let saves = 0;
+  // Pretend another dispatcher keeps restoring the stale key after each detach.
+  database.saveAgentSession = async (session) => {
+    if (session.continuationKey !== null) return save(session);
+    saves++;
+  };
+  const f = await fixture(Date.now, database);
+  const first = await f.arrival();
+  await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "succeeded");
+  const changed = await f.arrival("conversation", "different-daemon");
+  await expect(changed.dispatch()).rejects.toThrow("agent_session_unsettled");
+  expect(saves).toBe(3);
+  expect(f.connection.creates).toHaveLength(1);
 });
 
 test("ordinary launches use agent sessions and preserve long prompts without enabling continuation", async () => {
