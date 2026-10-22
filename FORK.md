@@ -46,7 +46,8 @@ The script refuses to run unless the checkout is clean, on `main`, and at the fe
 `origin/main`. It then:
 
 1. Clones that commit into a temporary build tree and stamps the fork version there.
-2. Runs `npm ci`, `npm run build`, and `npm test`, then `npm pack`.
+2. Runs `npm ci`, `npm run build`, and `npm test`, then `npm pack`. Tests run on at most half
+   the cores, because one worker per core makes the Docker-backed tests time out on a workstation.
 3. Installs the tarball into a temporary prefix and starts it on a spare loopback port with a
    temporary `HOME` and `PASEO_HUB_DATA_DIR`, and waits for `/health` to answer `{"ok":true}`.
    It never reads or writes `~/.local/share/paseo-hub`.
@@ -57,13 +58,14 @@ Rerunning on a commit that already has a release verifies that the existing tag 
 that commit and marks it latest again; it never replaces assets. The last line of output is
 `fork_version=<version>`.
 
-| Variable                      | Default                         |
-| ----------------------------- | ------------------------------- |
-| `PASEO_HUB_FORK_SRC`          | The checkout holding the script |
-| `PASEO_HUB_FORK_REPO`         | `kiawin/paseo-hub`              |
-| `PASEO_HUB_FORK_ID`           | `kiawin`                        |
-| `PASEO_HUB_FORK_NPM_REGISTRY` | `https://registry.npmjs.org/`   |
-| `PASEO_HUB_FORK_HEALTH_PORT`  | A free port picked at start     |
+| Variable                      | Default                                  |
+| ----------------------------- | ---------------------------------------- |
+| `PASEO_HUB_FORK_SRC`          | The checkout holding the script          |
+| `PASEO_HUB_FORK_REPO`         | `kiawin/paseo-hub`                       |
+| `PASEO_HUB_FORK_ID`           | `kiawin`                                 |
+| `PASEO_HUB_FORK_NPM_REGISTRY` | `https://registry.npmjs.org/`            |
+| `PASEO_HUB_FORK_HEALTH_PORT`  | A free port picked at start              |
+| `PASEO_HUB_FORK_TEST_WORKERS` | `50%` (a count, or a share of the cores) |
 
 `--skip-health-check` skips step 3 for a host that cannot start the server. It publishes an
 unverified build; use it knowingly.
