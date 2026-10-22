@@ -414,6 +414,17 @@ export class OrganizationTriggers {
     await this.page.getByRole("radio", { name: "Same conversation", exact: true }).click();
   }
 
+  async useContinuationKey(key: string) {
+    await this.page.getByRole("radio", { name: "Custom key", exact: true }).click();
+    await this.page.getByLabel("Continuation key", { exact: true }).fill(key);
+  }
+
+  async changeAgent(agent: string, mode: string, thinking: string) {
+    await this.selectAgent(agent);
+    await this.selectOption("Execution mode", mode);
+    await this.selectOption("Thinking", thinking);
+  }
+
   async save(name: string) {
     await this.page
       .locator("#trigger-editor-form")
