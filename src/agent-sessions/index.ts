@@ -2,6 +2,7 @@ import { executionLinkUrl } from "../agent-executions/link.js";
 import { integrationProviders } from "../integration-tools/grants.js";
 import { parseConnectionTemplate } from "../config/connection-template.js";
 import { createHash } from "node:crypto";
+import type { Logger } from "pino";
 import type { Database, AgentExecutionRecord } from "../db/types.js";
 import {
   DEFAULT_STARTUP_TIMEOUT_MS,
@@ -18,9 +19,13 @@ import {
   hashAgentExecutionCompletionToken,
 } from "../agent-executions/completion-token.js";
 import type { AgentSessionAction, AgentSessionRecord } from "./types.js";
+import { logger as defaultLogger } from "../logger.js";
 export type { AgentSessionRecord, AgentSessionAction } from "./types.js";
 
 export class AgentSessionError extends Error {}
+
+/** Each retry follows a session change made under the lock; more than this means it keeps changing. */
+const MAX_DISPATCH_ATTEMPTS = 3;
 
 /** Owns session selection, delivery, and cleanup under the same existing database lock. */
 export class AgentSessions {
@@ -30,19 +35,19 @@ export class AgentSessions {
     private readonly publicBaseUrl: string,
     private readonly outputs: OutputExecutorRegistry,
     private readonly now: () => number = Date.now,
+    private readonly logger: Pick<Logger, "info"> = defaultLogger,
   ) {}
 
-  async dispatch(input: {
-    executionId: string;
-    intent: LaunchMachineIntent;
-    connection: AgentConnection;
-    createOptions: () => Promise<DaemonCreateAgentOptions>;
-    onEvent: (event: AgentEvent) => void;
-  }): Promise<{
-    agentId: string;
-    unsubscribe: () => void;
-    action: "created" | "continued" | "restored";
-  }> {
+  async dispatch(input: DispatchInput): Promise<DispatchResult> {
+    return this.dispatchAttempt(input, 1, null);
+  }
+
+  private async dispatchAttempt(
+    input: DispatchInput,
+    attempt: number,
+    replacedSessionId: string | null,
+  ): Promise<DispatchResult> {
+    if (attempt > MAX_DISPATCH_ATTEMPTS) throw new AgentSessionError("agent_session_unsettled");
     const incoming = await this.database.findAgentExecutionById(input.executionId);
     if (!incoming || !isActive(incoming)) throw new AgentSessionError("execution_terminal");
     const policy = input.intent.continuation;
@@ -77,6 +82,7 @@ export class AgentSessions {
       !storedSession || (await isFinishedCredentialedSession(storedSession))
         ? await input.createOptions()
         : undefined;
+    let replacing = replacedSessionId;
     const dispatched = await this.database.withAdvisoryLock(`agent-session:${lockId}`, async () => {
       const tools = executionToolDefinitions(
         input.intent.outputSchema,
@@ -95,12 +101,12 @@ export class AgentSessions {
         await this.database.saveAgentSession({ ...session, continuationKey: null });
         session = undefined;
       }
-      const id = session?.id ?? deriveSessionId(projectId, `execution:${input.executionId}`);
       if (session && session.compatibility !== compatibility) {
-        throw new AgentSessionError(
-          "Continuation settings differ from the existing agent; use a different key or choose a new agent",
-        );
+        await this.detachIdleSession(session, input.executionId);
+        replacing = session.id;
+        session = undefined;
       }
+      const id = session?.id ?? deriveSessionId(projectId, `execution:${input.executionId}`);
       if (!session) {
         if (!options) return undefined;
         const token = deriveAgentExecutionCompletionToken(this.secret, `session:${id}`);
@@ -131,6 +137,8 @@ export class AgentSessions {
           },
         };
         await this.database.saveAgentSession(session);
+        this.logReplacement(replacing, id, continuationKey);
+        replacing = null;
       }
       const activeExecutions = (await this.database.listAgentSessionExecutions(id)).filter(
         (execution) => execution.status === "spawning" || execution.status === "running",
@@ -165,7 +173,31 @@ export class AgentSessions {
       const unsubscribe = await this.deliver(input, agentId, startupTimeoutMs);
       return { agentId, unsubscribe, action };
     });
-    return dispatched ?? this.dispatch(input);
+    return dispatched ?? this.dispatchAttempt(input, attempt + 1, replacing);
+  }
+
+  /** Frees an incompatible session's key for a new agent, unless another arrival is still using it. */
+  private async detachIdleSession(session: AgentSessionRecord, executionId: string): Promise<void> {
+    const executions = await this.database.listAgentSessionExecutions(session.id);
+    if (executions.some((item) => item.id !== executionId && isActive(item))) {
+      throw new AgentSessionError(
+        "Continuation settings differ from the existing agent; use a different key or choose a new agent",
+      );
+    }
+    await this.database.saveAgentSession({ ...session, continuationKey: null });
+  }
+
+  private logReplacement(
+    previousSessionId: string | null,
+    sessionId: string,
+    continuation: string | null,
+  ): void {
+    if (previousSessionId === null) return;
+    // The continuation key routes arrivals; "*Key" fields are redacted as credentials.
+    this.logger.info(
+      { previousSessionId, sessionId, continuation },
+      "replaced agent session with incompatible continuation settings",
+    );
   }
 
   /**
@@ -292,6 +324,20 @@ export class AgentSessions {
     }
     return false;
   }
+}
+
+interface DispatchInput {
+  executionId: string;
+  intent: LaunchMachineIntent;
+  connection: AgentConnection;
+  createOptions: () => Promise<DaemonCreateAgentOptions>;
+  onEvent: (event: AgentEvent) => void;
+}
+
+interface DispatchResult {
+  agentId: string;
+  unsubscribe: () => void;
+  action: "created" | "continued" | "restored";
 }
 
 function deriveSessionId(projectId: string, key: string): string {
