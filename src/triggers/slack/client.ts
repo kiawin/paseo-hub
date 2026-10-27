@@ -39,7 +39,7 @@ const SlackUserInfoSchema = SlackApiResponseSchema.extend({
 });
 const SLACK_API_TIMEOUT_MS = 10_000;
 const SLACK_THREAD_REPLIES_MAX_PAGES = 10;
-const SLACK_THREAD_CONTEXT_LIMIT = 50;
+const SLACK_THREAD_CONTEXT_LIMIT = 200;
 
 export interface SlackAttachmentMetadata {
   id: string;
@@ -191,12 +191,12 @@ export function createSlackBotClient(options: {
         .map(normalizeThreadMessage)
         .filter((message) => compareSlackTs(message.ts, input.beforeTs) < 0);
       root ??= page.find((message) => message.ts === input.threadTs);
-      selectedReplies = [
+      const replies = [
         ...selectedReplies,
         ...page.filter((message) => message.ts !== input.threadTs),
-      ]
-        .sort((left, right) => compareSlackTs(right.ts, left.ts))
-        .slice(0, SLACK_THREAD_CONTEXT_LIMIT - 1);
+      ].sort((left, right) => compareSlackTs(right.ts, left.ts));
+      if (replies.length > SLACK_THREAD_CONTEXT_LIMIT - 1) complete = false;
+      selectedReplies = replies.slice(0, SLACK_THREAD_CONTEXT_LIMIT - 1);
       pagesRead += 1;
       const next = result.response_metadata?.next_cursor;
       cursor = next === undefined || next.length === 0 ? undefined : next;
