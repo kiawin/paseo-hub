@@ -18,8 +18,8 @@ describe("Slack Web API client", () => {
       "operator",
     );
     assert.deepEqual(request, {
-      url: "https://slack.com/api/users.info",
-      method: "POST",
+      url: "https://slack.com/api/users.info?user=U1",
+      method: "GET",
     });
   });
 
@@ -129,7 +129,7 @@ describe("Slack Web API client", () => {
     assert.equal(requestSignal?.aborted, true);
   });
 
-  it("keeps the root with the latest 49 preceding Slack replies, oldest first", async () => {
+  it("keeps the root with the latest 199 preceding Slack replies, oldest first", async () => {
     const requests: Array<{ method: string; url: string; body: BodyInit | null | undefined }> = [];
     const messages = [
       { ts: "1700000000.000000", text: "root request", user: "UROOT" },
@@ -173,12 +173,12 @@ describe("Slack Web API client", () => {
       beforeTs: "1700000000.000456",
     });
 
-    assert.equal(hydrated?.messages.length, 50);
+    assert.equal(hydrated?.messages.length, 200);
     assert.equal(hydrated?.messages[0]?.content, "root request");
-    assert.equal(hydrated?.messages[1]?.content, "reply-407");
+    assert.equal(hydrated?.messages[1]?.content, "reply-257");
     assert.equal(hydrated?.messages.at(-1)?.content, "reply-455");
     assert.deepEqual(hydrated?.messages.at(-1)?.author, { id: "B455" });
-    assert.equal(hydrated?.complete, true);
+    assert.equal(hydrated?.complete, false);
     assert.equal(requests.length, 5);
     assert.deepEqual(
       requests.map(({ method, body }) => ({ method, body })),
@@ -194,6 +194,41 @@ describe("Slack Web API client", () => {
       requests.map(({ url }) => new URL(url).searchParams.get("cursor")),
       [null, "page-1", "page-2", "page-3", "page-4"],
     );
+  });
+
+  it("reports a Slack thread that fits the context limit as complete", async () => {
+    const messages = [
+      { ts: "1700000000.000000", text: "root request", user: "UROOT" },
+      ...Array.from({ length: 199 }, (_, index) => ({
+        ts: `1700000000.${String(index + 1).padStart(6, "0")}`,
+        text: `reply-${index + 1}`,
+        user: `U${index + 1}`,
+      })),
+    ];
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input) => {
+        const cursor = new URL(requestUrl(input)).searchParams.get("cursor");
+        const page = cursor === null ? 0 : Number(cursor.replace("page-", ""));
+        return Response.json({
+          ok: true,
+          messages: messages.slice(page * 100, (page + 1) * 100),
+          response_metadata: { next_cursor: page === 0 ? "page-1" : "" },
+        });
+      },
+    });
+
+    const hydrated = await client.readThreadMessages?.({
+      organizationId: "org-1",
+      teamId: "T1",
+      channelId: "C1",
+      threadTs: "1700000000.000000",
+      beforeTs: "1700000000.000200",
+    });
+
+    assert.equal(hydrated?.messages.length, 200);
+    assert.equal(hydrated?.messages[1]?.content, "reply-1");
+    assert.equal(hydrated?.complete, true);
   });
 
   it("keeps earlier Slack replies when a later page is rate-limited", async () => {
@@ -265,7 +300,7 @@ describe("Slack Web API client", () => {
           url: requestUrl(input),
           authorization: new Headers(init?.headers).get("authorization"),
         });
-        if (requestUrl(input).endsWith("files.info")) {
+        if (requestUrl(input).startsWith("https://slack.com/api/files.info?")) {
           return Response.json({
             ok: true,
             file: {
@@ -288,7 +323,7 @@ describe("Slack Web API client", () => {
 
     assert.equal(await response?.text(), "slack-image-bytes");
     assert.deepEqual(requests, [
-      { url: "https://slack.com/api/files.info", authorization: "Bearer xoxb-secret" },
+      { url: "https://slack.com/api/files.info?file=F1", authorization: "Bearer xoxb-secret" },
       {
         url: "https://files.slack.com/files-pri/T1-F1/download/image.png",
         authorization: "Bearer xoxb-secret",
