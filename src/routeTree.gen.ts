@@ -19,6 +19,7 @@ import { Route as TestTriggerRouteImport } from './routes/test/trigger'
 import { Route as TestStripeCheckoutRouteImport } from './routes/test/stripe-checkout'
 import { Route as TestSmokeRouteImport } from './routes/test/smoke'
 import { Route as IntegrationsGithubRouteImport } from './routes/integrations_.github'
+import { Route as HealthSlackRouteImport } from './routes/health/slack'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
@@ -109,6 +110,11 @@ const IntegrationsGithubRoute = IntegrationsGithubRouteImport.update({
   id: '/integrations_/github',
   path: '/integrations/github',
   getParentRoute: () => rootRouteImport,
+} as any)
+const HealthSlackRoute = HealthSlackRouteImport.update({
+  id: '/slack',
+  path: '/slack',
+  getParentRoute: () => HealthRoute,
 } as any)
 const AssetsSplatRoute = AssetsSplatRouteImport.update({
   id: '/assets/$',
@@ -344,7 +350,7 @@ const ShellOOrganizationSlugSettingsApiKeysRoute =
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/favicon.svg': typeof FaviconDotsvgRoute
-  '/health': typeof HealthRoute
+  '/health': typeof HealthRouteWithChildren
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
@@ -355,6 +361,7 @@ export interface FileRoutesByFullPath {
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
+  '/health/slack': typeof HealthSlackRoute
   '/integrations/github': typeof IntegrationsGithubRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
@@ -395,7 +402,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/favicon.svg': typeof FaviconDotsvgRoute
-  '/health': typeof HealthRoute
+  '/health': typeof HealthRouteWithChildren
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
@@ -406,6 +413,7 @@ export interface FileRoutesByTo {
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
+  '/health/slack': typeof HealthSlackRoute
   '/integrations/github': typeof IntegrationsGithubRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
@@ -447,7 +455,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
   '/favicon.svg': typeof FaviconDotsvgRoute
-  '/health': typeof HealthRoute
+  '/health': typeof HealthRouteWithChildren
   '/webhook': typeof WebhookRoute
   '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
@@ -458,6 +466,7 @@ export interface FileRoutesById {
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
+  '/health/slack': typeof HealthSlackRoute
   '/integrations_/github': typeof IntegrationsGithubRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
@@ -513,6 +522,7 @@ export interface FileRouteTypes {
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
+    | '/health/slack'
     | '/integrations/github'
     | '/test/smoke'
     | '/test/stripe-checkout'
@@ -564,6 +574,7 @@ export interface FileRouteTypes {
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
+    | '/health/slack'
     | '/integrations/github'
     | '/test/smoke'
     | '/test/stripe-checkout'
@@ -615,6 +626,7 @@ export interface FileRouteTypes {
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
+    | '/health/slack'
     | '/integrations_/github'
     | '/test/smoke'
     | '/test/stripe-checkout'
@@ -658,7 +670,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
   FaviconDotsvgRoute: typeof FaviconDotsvgRoute
-  HealthRoute: typeof HealthRoute
+  HealthRoute: typeof HealthRouteWithChildren
   WebhookRoute: typeof WebhookRoute
   ApiSplatRoute: typeof ApiSplatRoute
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
@@ -760,6 +772,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/integrations/github'
       preLoaderRoute: typeof IntegrationsGithubRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/health/slack': {
+      id: '/health/slack'
+      path: '/slack'
+      fullPath: '/health/slack'
+      preLoaderRoute: typeof HealthSlackRouteImport
+      parentRoute: typeof HealthRoute
     }
     '/assets/$': {
       id: '/assets/$'
@@ -1131,6 +1150,17 @@ const ShellRouteChildren: ShellRouteChildren = {
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
 
+interface HealthRouteChildren {
+  HealthSlackRoute: typeof HealthSlackRoute
+}
+
+const HealthRouteChildren: HealthRouteChildren = {
+  HealthSlackRoute: HealthSlackRoute,
+}
+
+const HealthRouteWithChildren =
+  HealthRoute._addFileChildren(HealthRouteChildren)
+
 interface ApiV1CliAuthorizationsRouteChildren {
   ApiV1CliAuthorizationsPollRoute: typeof ApiV1CliAuthorizationsPollRoute
 }
@@ -1148,7 +1178,7 @@ const ApiV1CliAuthorizationsRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
   FaviconDotsvgRoute: FaviconDotsvgRoute,
-  HealthRoute: HealthRoute,
+  HealthRoute: HealthRouteWithChildren,
   WebhookRoute: WebhookRoute,
   ApiSplatRoute: ApiSplatRoute,
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
