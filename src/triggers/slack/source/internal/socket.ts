@@ -155,6 +155,8 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     lastAcceptTimeoutAt: null as Date | null,
     lastPongAt: null as Date | null,
   };
+  /** When the newest successful durable accept began; an older accept's timeout is stale. */
+  let lastAcceptOkStartedAt: Date | null = null;
   const scrubValues = () => [
     options.appToken,
     ...(options.apiUrl === undefined ? [] : [options.apiUrl]),
@@ -366,16 +368,29 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   ): Promise<void> {
     const signatureHash = createHash("sha256").update(envelopeId).digest("hex");
     let events: AcceptedSlackEvents = [];
-    startPhase(link, "accept");
+    const acceptStartedAt = startPhase(link, "accept").startedAt;
+    // Ignored events (bot messages) never reach the durable store, so they prove nothing.
+    let durable = false;
+    const accept: SlackEventIntakeOptions["accept"] = async (input) => {
+      const acceptance = await options.accept(input);
+      durable = true;
+      return acceptance;
+    };
     try {
       const accepted = await settleWithin(
-        acceptSlackEvent(payload, signatureHash, handlers, options),
+        acceptSlackEvent(payload, signatureHash, handlers, { ...options, accept }),
         acceptTimeoutMs,
         "slack.socket.accept",
       );
       if (accepted === TIMED_OUT) {
         counters.acceptTimeouts += 1;
-        counters.lastAcceptTimeoutAt = new Date();
+        // A closed connection's accept can time out after a newer accept succeeded.
+        if (
+          lastAcceptOkStartedAt === null ||
+          lastAcceptOkStartedAt.getTime() <= acceptStartedAt.getTime()
+        ) {
+          counters.lastAcceptTimeoutAt = new Date();
+        }
         // Leave it unacknowledged: Slack redelivers it and the receipt store replays it.
         report(
           new Error("Slack event accept timed out"),
@@ -384,7 +399,10 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         );
         return;
       }
-      counters.lastAcceptOkAt = new Date();
+      if (durable) {
+        counters.lastAcceptOkAt = new Date();
+        lastAcceptOkStartedAt = acceptStartedAt;
+      }
       events = accepted;
     } catch (error) {
       if (!(error instanceof SlackEventIntakeValidationError)) throw error;
@@ -401,10 +419,15 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       for (const call of calls) {
         running.add(call);
         const settle = () => running.delete(call);
-        call.then(settle, settle);
+        // Already acknowledged, so dropping the connection would not bring the event back.
+        call.then(settle, (error: unknown) => {
+          settle();
+          report(error, "slack.socket.handoff", "internal");
+        });
       }
+      // allSettled, so one failing handler leaves the others under the deadline.
       const dispatched = await settleWithin(
-        Promise.all(calls),
+        Promise.allSettled(calls),
         dispatchTimeoutMs,
         "slack.socket.dispatch",
       );
