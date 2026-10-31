@@ -401,7 +401,13 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       }
       if (durable) {
         counters.lastAcceptOkAt = new Date();
-        lastAcceptOkStartedAt = acceptStartedAt;
+        // Accepts on different connections can finish out of order; keep the newest start.
+        if (
+          lastAcceptOkStartedAt === null ||
+          lastAcceptOkStartedAt.getTime() < acceptStartedAt.getTime()
+        ) {
+          lastAcceptOkStartedAt = acceptStartedAt;
+        }
       }
       events = accepted;
     } catch (error) {
@@ -479,9 +485,12 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       }
       socket.terminate();
     } catch (error) {
-      link.failureOwned = true;
-      report(error, "slack.socket.ack", "network");
-      socket.close();
+      // A ping timeout may already have dropped the socket, failing this write with it.
+      if (!link.failureOwned) {
+        link.failureOwned = true;
+        report(error, "slack.socket.ack", "network");
+      }
+      socket.terminate();
     }
     return false;
   }
