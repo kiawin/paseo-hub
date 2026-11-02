@@ -11,6 +11,12 @@ import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import { z } from "zod";
 import { dump } from "js-yaml";
 import { createDatabase } from "./test-utils/runtime.js";
+import {
+  assertMultiSlackUpgrade,
+  seedSingleAppProviders,
+  SINGLE_APP_MIGRATION,
+  type UpgradeQuery,
+} from "./test-utils/multi-slack-upgrade.js";
 import { createHubApplication } from "../app.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
@@ -312,7 +318,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 50,
+      drizzleMigrations: 51,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -957,6 +963,19 @@ describe("database migration application", () => {
     } finally {
       await database.close();
     }
+  }, 120_000);
+
+  it("keys provider settings by app and keeps single-app data when opening Slack to more apps", async () => {
+    const url = await createHistoricalBaseline({
+      postgres,
+      prefix: "multi_slack_apps",
+      through: SINGLE_APP_MIGRATION,
+    });
+    const query: UpgradeQuery = (text, values) => poolQuery(url, text, values);
+    await seedSingleAppProviders(query);
+    const database = await createDatabase(url);
+    await database.close();
+    await assertMultiSlackUpgrade(query);
   }, 120_000);
 
   it("claims concurrent lifecycle receipts without unique-index failures", async () => {

@@ -139,13 +139,14 @@ export function createProviderApplicationStore(
           const result = await transaction.query<ProviderConfigurationRow>(
             currentVersion === undefined
               ? `insert into runtime_provider_configuration
-                 (provider, configuration, verified_external_identity, version, verified_at,
-                  updated_at, updated_by_user_id)
-               values ($1, $2, $3, 1, now(), now(), $4)
+                 (provider, application_id, configuration, verified_external_identity, version,
+                  verified_at, updated_at, updated_by_user_id)
+               values ($1, $5, $2, $3, 1, now(), now(), $4)
                returning provider, configuration, verified_external_identity, version,
                          verified_at, updated_at, updated_by_user_id`
               : `update runtime_provider_configuration
-               set configuration = $2,
+               set application_id = $5,
+                   configuration = $2,
                    verified_external_identity = $3,
                    version = version + 1,
                    verified_at = now(),
@@ -159,6 +160,7 @@ export function createProviderApplicationStore(
               JSON.stringify(input.configuration),
               JSON.stringify(input.identity),
               input.updatedByUserId,
+              input.identity.id,
             ],
           );
           const saved = result.rows[0];
@@ -240,7 +242,7 @@ export function createProviderApplicationStore(
           await transaction.query(
             `insert into slack_connections (organization_id, team_id, team_name, slug, bot_user_id,
                bot_access_token, scopes, provider_application_id, connected_by_user_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (team_id) do update set
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (provider_application_id, team_id) do update set
                team_name = excluded.team_name, bot_user_id = excluded.bot_user_id,
                bot_access_token = excluded.bot_access_token, scopes = excluded.scopes,
                provider_application_id = excluded.provider_application_id,
@@ -259,12 +261,12 @@ export function createProviderApplicationStore(
           );
           const saved = await transaction.query<ProviderConfigurationRow>(
             currentVersion === undefined
-              ? `insert into runtime_provider_configuration (provider, configuration,
+              ? `insert into runtime_provider_configuration (provider, application_id, configuration,
                    verified_external_identity, version, verified_at, updated_at, updated_by_user_id)
-                 values ('slack', $1, $2, 1, now(), now(), $3)
+                 values ('slack', $4, $1, $2, 1, now(), now(), $3)
                  returning provider, configuration, verified_external_identity, version, verified_at,
                            updated_at, updated_by_user_id`
-              : `update runtime_provider_configuration set configuration = $1,
+              : `update runtime_provider_configuration set application_id = $4, configuration = $1,
                    verified_external_identity = $2, version = version + 1, verified_at = now(),
                    updated_at = now(), updated_by_user_id = $3
                  where provider = 'slack'
@@ -274,6 +276,7 @@ export function createProviderApplicationStore(
               JSON.stringify(input.configuration),
               JSON.stringify(input.identity),
               input.updatedByUserId,
+              input.identity.id,
             ],
           );
           const row = saved.rows[0];
@@ -321,11 +324,17 @@ async function writeProviderActivation(
   applicationId: string,
   configurationVersion: number,
 ): Promise<void> {
+  // A provider runs one app, so activating an app replaces the last one.
+  await transaction.query(
+    `delete from runtime_provider_activation
+     where provider = $1 and provider_application_id <> $2`,
+    [provider, applicationId],
+  );
   await transaction.query(
     `insert into runtime_provider_activation
        (provider, provider_application_id, configuration_version, activated_at)
      values ($1, $2, $3, now())
-     on conflict (provider) do update
+     on conflict (provider, provider_application_id) do update
        set provider_application_id = excluded.provider_application_id,
            configuration_version = excluded.configuration_version,
            activated_at = excluded.activated_at`,

@@ -52,6 +52,57 @@ describe("provider application OAuth bind authority", () => {
   );
 });
 
+describe("fresh provider configuration from an OAuth callback", () => {
+  it.each(["PGlite", "PostgreSQL"] as const)(
+    "stores a fresh Linear configuration under its client id in %s",
+    async (engine) => {
+      const fixture = await databaseFixture(engine);
+      try {
+        await seedAuthority(fixture.bundle);
+        const database = createDatabase(fixture.bundle.runtime, fixture.bundle.locks);
+        const linear = application("linear", "FRESH");
+        await database.startConnectionAttempt({
+          provider: "linear",
+          stateVerifier: "linear-fresh",
+          access: START_ACCESS,
+          lifetimeMinutes: 10,
+          configurationVersion: 1,
+          providerApplicationId: linear.identity.id,
+          callbackOrigin: "https://hub.example.test",
+          configurationSnapshot: linear.configuration,
+          expectedConfigurationVersion: null,
+          activateConfiguration: true,
+        });
+        await database.completeLinearProviderApplication({
+          stateVerifier: "linear-fresh",
+          access: CALLBACK_ACCESS,
+          providerApplicationId: linear.identity.id,
+          phase: "linear_authorization",
+          linearOrganizationId: "linear-organization",
+          linearOrganizationName: "Acme",
+          appUserId: "linear-app-user",
+          accessToken: "linear-token",
+          refreshToken: "linear-refresh-token",
+          scopes: ["read", "comments:create"],
+          providerConfiguration: {
+            configuration: linear.configuration,
+            identity: linear.identity,
+            expectedVersion: undefined,
+            updatedByUserId: "operator",
+          },
+        });
+        const stored = await fixture.bundle.runtime.query<{ application_id: string }>(
+          `select application_id from runtime_provider_configuration where provider = 'linear'`,
+        );
+        assert.deepEqual(stored.rows, [{ application_id: "linear-client-FRESH" }]);
+      } finally {
+        await fixture.close();
+      }
+    },
+    120_000,
+  );
+});
+
 async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider: Provider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);

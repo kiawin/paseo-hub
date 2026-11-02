@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Locks } from "./runtime/locks/index.js";
 import type { DatabaseRuntime, DrizzleHandle, TransactionHandle } from "./runtime/index.js";
 import { slugify } from "../slug.js";
@@ -314,6 +314,7 @@ export class ConnectionRepository {
         if (stored === undefined) {
           await transaction.insert(schema.runtimeProviderConfiguration).values({
             provider: "slack",
+            applicationId: input.providerApplicationId,
             configuration: providerConfiguration.configuration,
             verifiedExternalIdentity: providerConfiguration.identity,
             version: 1,
@@ -325,6 +326,7 @@ export class ConnectionRepository {
           await transaction
             .update(schema.runtimeProviderConfiguration)
             .set({
+              applicationId: input.providerApplicationId,
               configuration: providerConfiguration.configuration,
               verifiedExternalIdentity: providerConfiguration.identity,
               version: sql`${schema.runtimeProviderConfiguration.version} + 1`,
@@ -436,6 +438,7 @@ export class ConnectionRepository {
         if (stored === undefined) {
           await transaction.insert(schema.runtimeProviderConfiguration).values({
             provider: "linear",
+            applicationId: input.providerApplicationId,
             configuration: providerConfiguration.configuration,
             verifiedExternalIdentity: providerConfiguration.identity,
             version: 1,
@@ -447,6 +450,7 @@ export class ConnectionRepository {
           await transaction
             .update(schema.runtimeProviderConfiguration)
             .set({
+              applicationId: input.providerApplicationId,
               configuration: providerConfiguration.configuration,
               verifiedExternalIdentity: providerConfiguration.identity,
               version: sql`${schema.runtimeProviderConfiguration.version} + 1`,
@@ -1026,11 +1030,23 @@ async function writeProviderActivation(
   applicationId: string,
   configurationVersion: number,
 ): Promise<void> {
+  // A provider runs one app, so activating an app replaces the last one.
+  await transaction
+    .delete(schema.runtimeProviderActivations)
+    .where(
+      and(
+        eq(schema.runtimeProviderActivations.provider, provider),
+        ne(schema.runtimeProviderActivations.providerApplicationId, applicationId),
+      ),
+    );
   await transaction
     .insert(schema.runtimeProviderActivations)
     .values({ provider, providerApplicationId: applicationId, configurationVersion })
     .onConflictDoUpdate({
-      target: schema.runtimeProviderActivations.provider,
+      target: [
+        schema.runtimeProviderActivations.provider,
+        schema.runtimeProviderActivations.providerApplicationId,
+      ],
       set: {
         providerApplicationId: applicationId,
         configurationVersion,

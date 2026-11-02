@@ -329,9 +329,10 @@ export class HubHarness {
 
     await client.query(
       `insert into slack_connections
-         (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
-       values ($1, $2, $3, $4, 'Paseo', 'UBOT', 'xoxb-test', $5)
-       on conflict (team_id) do nothing`,
+         (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes,
+          provider_application_id)
+       values ($1, $2, $3, $4, 'Paseo', 'UBOT', 'xoxb-test', $5, 'A1')
+       on conflict (provider_application_id, team_id) do nothing`,
       [id, HUB_ORGANIZATION_ID, teamId, slug, JSON.stringify(["app_mentions:read", "chat:write"])],
     );
     await client.close();
