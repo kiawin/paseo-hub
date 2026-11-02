@@ -1197,9 +1197,10 @@ describe("database migration application", () => {
       await poolQuery(
         url,
         `insert into slack_connections
-           (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
+           (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes,
+            provider_application_id)
          values ($1, 'organization-a', 'startup-team', 'startup-slack', 'Startup Slack',
-                 'startup-bot', 'startup-token', '[]'::jsonb)`,
+                 'startup-bot', 'startup-token', '[]'::jsonb, 'A1')`,
         [slackConnectionId],
       );
       const configuration = {
@@ -1302,6 +1303,7 @@ describe("database migration application", () => {
       assert.notEqual(single.runtimeProjectId, multi.runtimeProjectId);
       assert.equal((await database.listProjectsForOrganization("organization-a")).length, 0);
       const accepted = await database.acceptSlackEvent({
+        providerApplicationId: "A1",
         teamId: "startup-team",
         deliveryId: "organization-trigger-adapter-route",
         source: "slack.mention",

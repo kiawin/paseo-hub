@@ -239,7 +239,12 @@ export function createProviderApplicationStore(
         database.transaction(async (transaction) => {
           await lockProviderActivation(locks, transaction, "slack", input.identity.id);
           await requireCompatibleConnections(transaction, "slack", input.identity.id);
-          await locks.withTxLock(transaction, JSON.stringify(["slack", input.installation.teamId]));
+          // The same workspace lock as a webhook install, so two apps joining one workspace for
+          // different organizations serialize.
+          await locks.withTxLock(
+            transaction,
+            JSON.stringify(["paseo-connection", "slack", "external", input.installation.teamId]),
+          );
           const existingConfiguration = await transaction.query<{ version: number }>(
             `select version from runtime_provider_configuration
              where provider = 'slack' and application_id = $1 for update`,
@@ -249,13 +254,19 @@ export function createProviderApplicationStore(
           if (currentVersion !== input.expectedVersion) {
             throw new ProviderConfigurationConflictError();
           }
-          const existingConnection = await transaction.query<{ organization_id: string }>(
-            `select organization_id from slack_connections where team_id = $1 for update`,
+          // Every app's connections in the workspace count: a workspace belongs to one organization.
+          const workspaceConnections = await transaction.query<{
+            organization_id: string;
+            provider_application_id: string | null;
+          }>(
+            `select organization_id, provider_application_id from slack_connections
+             where team_id = $1 for update`,
             [input.installation.teamId],
           );
           if (
-            existingConnection.rows[0] !== undefined &&
-            existingConnection.rows[0].organization_id !== input.organizationId
+            workspaceConnections.rows.some(
+              (connection) => connection.organization_id !== input.organizationId,
+            )
           ) {
             const error = new Error("Slack workspace belongs to another organization");
             error.name = "ProviderApplicationIdentityConflictError";
@@ -273,7 +284,13 @@ export function createProviderApplicationStore(
               input.organizationId,
               input.installation.teamId,
               input.installation.teamName,
-              `slack-${input.installation.teamId.toLowerCase()}`,
+              socketConnectionSlug(
+                input.installation.teamId,
+                input.identity.id,
+                workspaceConnections.rows.some(
+                  (connection) => connection.provider_application_id !== input.identity.id,
+                ),
+              ),
               input.installation.botUserId,
               input.installation.botAccessToken,
               JSON.stringify(input.installation.scopes),
@@ -310,6 +327,15 @@ export function createProviderApplicationStore(
       );
     },
   };
+}
+
+/**
+ * A new Socket Mode connection's slug. The first app in a workspace keeps the plain workspace slug;
+ * another app's connection there is told apart by its app id. An existing row keeps its slug.
+ */
+function socketConnectionSlug(teamId: string, applicationId: string, shared: boolean): string {
+  const slug = `slack-${teamId.toLowerCase()}`;
+  return shared ? `${slug}-${applicationId.toLowerCase()}` : slug;
 }
 
 async function lockProviderActivation(

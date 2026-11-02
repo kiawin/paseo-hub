@@ -4276,16 +4276,16 @@ class PgDatabase implements Database {
     return this.connections.findDiscord(guildId);
   }
 
-  findSlackConnection(teamId: string) {
-    return this.connections.findSlack(teamId);
+  findSlackConnection(applicationId: string, teamId: string) {
+    return this.connections.findSlack(applicationId, teamId);
   }
 
   findLinearConnection(linearOrganizationId: string) {
     return this.connections.findLinear(linearOrganizationId);
   }
 
-  findSlackConnectionForOrganization(organizationId: string, teamId: string) {
-    return this.connections.findSlackForOrganization(organizationId, teamId);
+  findSlackConnectionById(organizationId: string, connectionId: string) {
+    return this.connections.findSlackById(organizationId, connectionId);
   }
 
   findLinearConnectionForOrganization(organizationId: string, linearOrganizationId: string) {

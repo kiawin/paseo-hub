@@ -136,7 +136,14 @@ export function createSlackRegistration(
     options.botClient ??
     createSlackBotClient({
       tokenForWorkspace: async (organizationId, teamId) =>
-        (await findSlackBindingForOrganization(database, organizationId, teamId))?.botAccessToken,
+        (
+          await findSlackBindingForOrganization(
+            database,
+            configuration.appId,
+            organizationId,
+            teamId,
+          )
+        )?.botAccessToken,
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     });
   const connection =
@@ -171,7 +178,14 @@ export function createSlackRegistration(
             organizationBillingUrl(database, options.publicBaseUrl!, organizationId),
           ...(attachments === undefined ? {} : { attachments }),
           botUserIdForWorkspace: async (organizationId, teamId) =>
-            (await findSlackBindingForOrganization(database, organizationId, teamId))?.botUserId,
+            (
+              await findSlackBindingForOrganization(
+                database,
+                configuration.appId,
+                organizationId,
+                teamId,
+              )
+            )?.botUserId,
           client: bot,
         }),
     ],
@@ -201,12 +215,14 @@ function slackSocketOptions(
   return options.socket === undefined ? {} : { socket: options.socket };
 }
 
+/** This registration's app's connection to the workspace; another app may share the workspace. */
 async function findSlackBindingForOrganization(
   database: Database,
+  applicationId: string,
   organizationId: string,
   teamId: string,
 ): Promise<SlackConnectionRecord | undefined> {
-  const binding = await database.findSlackConnectionForOrganization(organizationId, teamId);
+  const binding = await database.findSlackConnection(applicationId, teamId);
   return binding?.organizationId === organizationId && hasRequiredSlackScopes(binding.scopes)
     ? binding
     : undefined;

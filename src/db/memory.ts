@@ -227,7 +227,10 @@ class MemoryDatabase implements Database {
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
     for (const connection of options.slackConnections ?? []) {
-      this.slackConnections.set(connection.teamId, connection);
+      this.slackConnections.set(
+        slackConnectionKey(connection.providerApplicationId, connection.teamId),
+        connection,
+      );
     }
   }
 
@@ -1063,7 +1066,7 @@ class MemoryDatabase implements Database {
   }
 
   async acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance> {
-    const binding = await this.findSlackConnection(input.teamId);
+    const binding = await this.findSlackConnection(input.providerApplicationId, input.teamId);
     const reason = slackDropReason(input, binding);
     return this.acceptMemoryEvent(
       input,
@@ -3317,20 +3320,27 @@ class MemoryDatabase implements Database {
     return Promise.resolve(this.discordConnections.get(_guildId));
   }
 
-  findSlackConnection(_teamId: string): Promise<SlackConnectionRecord | undefined> {
-    return Promise.resolve(this.slackConnections.get(_teamId));
+  findSlackConnection(
+    applicationId: string,
+    teamId: string,
+  ): Promise<SlackConnectionRecord | undefined> {
+    return Promise.resolve(this.slackConnections.get(slackConnectionKey(applicationId, teamId)));
   }
 
   findLinearConnection(_linearOrganizationId: string): Promise<LinearConnectionRecord | undefined> {
     return Promise.resolve(this.linearConnections.get(_linearOrganizationId));
   }
 
-  findSlackConnectionForOrganization(
+  findSlackConnectionById(
     organizationId: string,
-    teamId: string,
+    connectionId: string,
   ): Promise<SlackConnectionRecord | undefined> {
-    const connection = this.slackConnections.get(teamId);
-    return Promise.resolve(connection?.organizationId === organizationId ? connection : undefined);
+    return Promise.resolve(
+      Array.from(this.slackConnections.values()).find(
+        (connection) =>
+          connection.organizationId === organizationId && connection.id === connectionId,
+      ),
+    );
   }
 
   findLinearConnectionForOrganization(
@@ -3586,6 +3596,11 @@ function discordDropReason(
   if (input.dropReason !== undefined) return input.dropReason;
   if (binding === undefined) return "discord_unbound";
   return undefined;
+}
+
+/** Keys one Slack app's connection to one workspace; a row from before apps were recorded has none. */
+function slackConnectionKey(applicationId: string | null, teamId: string): string {
+  return JSON.stringify([applicationId, teamId]);
 }
 
 function slackDropReason(

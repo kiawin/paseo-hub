@@ -58,7 +58,12 @@ export class ProviderEventAcceptanceRepository {
     input: ProviderEventEvidence,
   ): Promise<ProviderEventAcceptance> {
     return this.database.transaction(async (transaction) => {
-      const connection = await findConnection(transaction, provider, externalId);
+      const connection = await findConnection(
+        transaction,
+        provider,
+        externalId,
+        input.providerApplicationId ?? null,
+      );
       if (connection === undefined) {
         return { status: "dropped", receiptId: input.deliveryId, reason: `${provider}_unbound` };
       }
@@ -559,6 +564,7 @@ async function findConnection(
   transaction: HubTransaction,
   provider: "github" | "slack" | "discord" | "linear",
   externalId: number | string,
+  applicationId: string | null,
 ) {
   if (provider === "github") {
     const [row] = await transaction
@@ -573,13 +579,21 @@ async function findConnection(
     return row;
   }
   if (provider === "slack") {
+    // An event belongs to the connection of the app that received it; another app may share the
+    // workspace.
+    if (applicationId === null) return undefined;
     const [row] = await transaction
       .select({
         id: schema.slackConnections.id,
         organizationId: schema.slackConnections.organizationId,
       })
       .from(schema.slackConnections)
-      .where(eq(schema.slackConnections.teamId, String(externalId)))
+      .where(
+        and(
+          eq(schema.slackConnections.providerApplicationId, applicationId),
+          eq(schema.slackConnections.teamId, String(externalId)),
+        ),
+      )
       .limit(1);
     return row;
   }

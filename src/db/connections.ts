@@ -9,6 +9,7 @@ import {
 } from "./errors.js";
 import * as schema from "./schema.js";
 import type {
+  ConnectionAttemptConfigurationSnapshot,
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
@@ -79,16 +80,9 @@ export class ConnectionRepository {
     });
   }
 
-  async findAttemptConfiguration(stateVerifier: string): Promise<
-    | {
-        configurationVersion: number;
-        callbackOrigin: string;
-        configurationSnapshot: unknown;
-        expectedConfigurationVersion: number | null;
-        activateConfiguration: boolean;
-      }
-    | undefined
-  > {
+  async findAttemptConfiguration(
+    stateVerifier: string,
+  ): Promise<ConnectionAttemptConfigurationSnapshot | undefined> {
     const [attempt] = await this.database
       .select({
         configurationVersion: schema.organizationConnectionAttempts.configurationVersion,
@@ -97,6 +91,7 @@ export class ConnectionRepository {
         expectedConfigurationVersion:
           schema.organizationConnectionAttempts.expectedConfigurationVersion,
         activateConfiguration: schema.organizationConnectionAttempts.activateConfiguration,
+        providerApplicationId: schema.organizationConnectionAttempts.providerApplicationId,
       })
       .from(schema.organizationConnectionAttempts)
       .where(
@@ -272,18 +267,26 @@ export class ConnectionRepository {
           providerConfiguration,
         );
       }
+      // Both Slack install paths take this workspace lock, and every app's connections in the
+      // workspace count, so a workspace belongs to one organization whichever app joins it.
       await lockExternal(this.locks, runtimeTransaction, "slack", input.teamId);
-      const [existing] = await transaction
+      const workspace = await transaction
         .select({
           id: schema.slackConnections.id,
           organizationId: schema.slackConnections.organizationId,
+          providerApplicationId: schema.slackConnections.providerApplicationId,
         })
         .from(schema.slackConnections)
         .where(eq(schema.slackConnections.teamId, input.teamId))
         .for("update");
-      if (existing !== undefined && existing.organizationId !== attempt.organizationId) {
+      if (workspace.some((connection) => connection.organizationId !== attempt.organizationId)) {
         throw new ConnectionConflictError();
       }
+      // This app's own row, or a row from before apps were recorded, which this app then claims.
+      const existing =
+        workspace.find(
+          (connection) => connection.providerApplicationId === input.providerApplicationId,
+        ) ?? workspace.find((connection) => connection.providerApplicationId === null);
       if (existing === undefined) {
         await transaction.insert(schema.slackConnections).values({
           organizationId: attempt.organizationId,
@@ -737,17 +740,8 @@ export class ConnectionRepository {
     return row === undefined ? undefined : discordConnection(row);
   }
 
-  async findSlack(teamId: string): Promise<SlackConnectionRecord | undefined> {
-    const [row] = await this.database
-      .select()
-      .from(schema.slackConnections)
-      .where(eq(schema.slackConnections.teamId, teamId))
-      .limit(1);
-    return row === undefined ? undefined : slackConnection(row);
-  }
-
-  async findSlackForOrganization(
-    organizationId: string,
+  async findSlack(
+    applicationId: string,
     teamId: string,
   ): Promise<SlackConnectionRecord | undefined> {
     const [row] = await this.database
@@ -755,8 +749,25 @@ export class ConnectionRepository {
       .from(schema.slackConnections)
       .where(
         and(
-          eq(schema.slackConnections.organizationId, organizationId),
+          eq(schema.slackConnections.providerApplicationId, applicationId),
           eq(schema.slackConnections.teamId, teamId),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? undefined : slackConnection(row);
+  }
+
+  async findSlackById(
+    organizationId: string,
+    connectionId: string,
+  ): Promise<SlackConnectionRecord | undefined> {
+    const [row] = await this.database
+      .select()
+      .from(schema.slackConnections)
+      .where(
+        and(
+          eq(schema.slackConnections.organizationId, organizationId),
+          eq(schema.slackConnections.id, connectionId),
         ),
       )
       .limit(1);

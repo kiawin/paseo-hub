@@ -555,6 +555,7 @@ describe("dynamic provider runtime", () => {
         configurationSnapshot: slackConfiguration("old"),
         expectedConfigurationVersion: null,
         activateConfiguration: false,
+        providerApplicationId: slackConfiguration("old").appId,
       });
     const runtime = new DynamicProviderRuntime({
       database,

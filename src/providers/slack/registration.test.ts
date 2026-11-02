@@ -306,7 +306,7 @@ describe("Slack registration", () => {
 
   it("does not lend a rebound workspace token to an older organization execution", async () => {
     const database = createMemoryDatabase();
-    database.findSlackConnectionForOrganization = () =>
+    database.findSlackConnection = () =>
       Promise.resolve({
         id: "slack-connection",
         organizationId: "org-b",

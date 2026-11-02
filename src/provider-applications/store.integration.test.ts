@@ -190,7 +190,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
   await startAttempt("state-ok", null);
   await complete("state-ok", "T1", undefined);
   assert.equal((await store.read("slack"))?.version, 1);
-  assert.equal((await database.findSlackConnection("T1"))?.providerApplicationId, "A1");
+  assert.equal((await database.findSlackConnection("A1", "T1"))?.providerApplicationId, "A1");
   assert.equal(
     (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("slack"))[0]
       ?.status,
@@ -199,7 +199,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
 
   await startAttempt("state-conflict", 1);
   await assert.rejects(() => complete("state-conflict", "T2", 99));
-  assert.equal(await database.findSlackConnection("T2"), undefined);
+  assert.equal(await database.findSlackConnection("A1", "T2"), undefined);
   assert.equal((await store.read("slack"))?.version, 1);
   assert.equal(
     (
@@ -234,7 +234,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
       String(Reflect.get(Reflect.get(error, "cause") ?? {}, "message")) ===
         "simulated crash boundary",
   );
-  assert.equal(await database.findSlackConnection("T3"), undefined);
+  assert.equal(await database.findSlackConnection("A1", "T3"), undefined);
   assert.equal((await store.read("slack"))?.version, 1);
   assert.equal(
     (
@@ -279,7 +279,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
     socket.configuration.provider === "slack" ? socket.configuration.transport : undefined,
     "socket",
   );
-  assert.equal((await database.findSlackConnection("T2"))?.providerApplicationId, "A1");
+  assert.equal((await database.findSlackConnection("A1", "T2"))?.providerApplicationId, "A1");
 }
 
 /** Runs after `exerciseSlackAtomicTransition`, which leaves app A1 at version 2 with two teams. */
@@ -450,7 +450,7 @@ async function exerciseSeveralSlackApps(bundle: DatabaseRuntimeBundle) {
   await assert.rejects(() => bindB("state-b-at-a-version", "T20"));
   await startAttempt("state-b-current", webhook("B1"), 1, null, false);
   await bindB("state-b-current", "T20");
-  assert.equal((await database.findSlackConnection("T20"))?.providerApplicationId, "B1");
+  assert.equal((await database.findSlackConnection("B1", "T20"))?.providerApplicationId, "B1");
 
   // B's webhook install through bindSlackTransition moves only B.
   const rotatedB = { ...webhook("B1"), clientSecret: "secret-B1-rotated" };
@@ -516,7 +516,7 @@ async function exerciseSeveralSlackApps(bundle: DatabaseRuntimeBundle) {
     }),
   );
   assert.deepEqual(await snapshot("D1"), { configuration: [], activation: [] });
-  assert.equal(await database.findSlackConnection("T31"), undefined);
+  assert.equal(await database.findSlackConnection("D1", "T31"), undefined);
   await bundle.runtime.query(`delete from slack_connections where team_id = 'T30'`);
 
   // Every other provider keeps one app: a second GitHub app is refused and the first stays.
