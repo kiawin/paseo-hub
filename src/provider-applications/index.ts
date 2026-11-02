@@ -79,7 +79,10 @@ export interface StoredProviderApplication {
 }
 
 export interface ProviderApplicationStore {
-  read(provider: Provider): Promise<StoredProviderApplication | undefined>;
+  /** One app's settings. Without an app id, the provider's only app; fails when Slack has several. */
+  read(provider: Provider, applicationId?: string): Promise<StoredProviderApplication | undefined>;
+  /** Every stored app of one provider. */
+  list(provider: Provider): Promise<readonly StoredProviderApplication[]>;
   readAll(): Promise<readonly StoredProviderApplication[]>;
   save(input: {
     provider: Provider;

@@ -106,31 +106,47 @@ export function createProviderApplicationStore(
   >,
 ): ProviderApplicationStore {
   return {
-    async read(provider) {
+    async read(provider, applicationId) {
       const result = await database.query<ProviderConfigurationRow>(
         `select provider, configuration, verified_external_identity, version,
                 verified_at, updated_at, updated_by_user_id
-         from runtime_provider_configuration where provider = $1`,
+         from runtime_provider_configuration
+         where provider = $1 and ($2::text is null or application_id = $2)
+         order by application_id`,
+        [provider, applicationId ?? null],
+      );
+      if (result.rows.length > 1) {
+        throw new Error(`several ${provider} apps are stored; name the app to read`);
+      }
+      return result.rows[0] === undefined ? undefined : parseRow(result.rows[0]);
+    },
+    async list(provider) {
+      const result = await database.query<ProviderConfigurationRow>(
+        `select provider, configuration, verified_external_identity, version,
+                verified_at, updated_at, updated_by_user_id
+         from runtime_provider_configuration where provider = $1 order by application_id`,
         [provider],
       );
-      return result.rows[0] === undefined ? undefined : parseRow(result.rows[0]);
+      return result.rows.map(parseRow);
     },
     async readAll() {
       const result = await database.query<ProviderConfigurationRow>(
         `select provider, configuration, verified_external_identity, version,
                 verified_at, updated_at, updated_by_user_id
-         from runtime_provider_configuration order by provider`,
+         from runtime_provider_configuration order by provider, application_id`,
       );
       return result.rows.map(parseRow);
     },
     save(input) {
-      return locks.withLock(`provider-configuration:${input.provider}`, () =>
+      const key = applicationKey(input.provider, input.identity.id);
+      return locks.withLock(`provider-configuration:${key.join(":")}`, () =>
         database.transaction(async (transaction) => {
-          await lockProviderActivation(locks, transaction, input.provider);
+          await lockProviderActivation(locks, transaction, input.provider, input.identity.id);
           await requireCompatibleConnections(transaction, input.provider, input.identity.id);
           const existing = await transaction.query<{ version: number }>(
-            `select version from runtime_provider_configuration where provider = $1 for update`,
-            [input.provider],
+            `select version from runtime_provider_configuration
+             where provider = $1 and ($2::text is null or application_id = $2) for update`,
+            [input.provider, slackApplicationId(input.provider, input.identity.id)],
           );
           const currentVersion = existing.rows[0]?.version;
           if (currentVersion !== input.expectedVersion) {
@@ -152,7 +168,7 @@ export function createProviderApplicationStore(
                    verified_at = now(),
                    updated_at = now(),
                    updated_by_user_id = $4
-               where provider = $1
+               where provider = $1 and ($6::text is null or application_id = $6)
                returning provider, configuration, verified_external_identity, version,
                          verified_at, updated_at, updated_by_user_id`,
             [
@@ -161,6 +177,9 @@ export function createProviderApplicationStore(
               JSON.stringify(input.identity),
               input.updatedByUserId,
               input.identity.id,
+              ...(currentVersion === undefined
+                ? []
+                : [slackApplicationId(input.provider, input.identity.id)]),
             ],
           );
           const saved = result.rows[0];
@@ -177,9 +196,10 @@ export function createProviderApplicationStore(
       );
     },
     activate(input) {
-      return locks.withLock(`provider-configuration:${input.provider}`, () =>
+      const key = applicationKey(input.provider, input.identity.id);
+      return locks.withLock(`provider-configuration:${key.join(":")}`, () =>
         database.transaction(async (transaction) => {
-          await lockProviderActivation(locks, transaction, input.provider);
+          await lockProviderActivation(locks, transaction, input.provider, input.identity.id);
           await requireCompatibleConnections(transaction, input.provider, input.identity.id);
           await writeProviderActivation(
             transaction,
@@ -215,13 +235,15 @@ export function createProviderApplicationStore(
       });
     },
     completeSlackSocketApplication(input) {
-      return locks.withLock("provider-configuration:slack", () =>
+      return locks.withLock(`provider-configuration:slack:${input.identity.id}`, () =>
         database.transaction(async (transaction) => {
-          await lockProviderActivation(locks, transaction, "slack");
+          await lockProviderActivation(locks, transaction, "slack", input.identity.id);
           await requireCompatibleConnections(transaction, "slack", input.identity.id);
           await locks.withTxLock(transaction, JSON.stringify(["slack", input.installation.teamId]));
           const existingConfiguration = await transaction.query<{ version: number }>(
-            `select version from runtime_provider_configuration where provider = 'slack' for update`,
+            `select version from runtime_provider_configuration
+             where provider = 'slack' and application_id = $1 for update`,
+            [input.identity.id],
           );
           const currentVersion = existingConfiguration.rows[0]?.version;
           if (currentVersion !== input.expectedVersion) {
@@ -269,7 +291,7 @@ export function createProviderApplicationStore(
               : `update runtime_provider_configuration set application_id = $4, configuration = $1,
                    verified_external_identity = $2, version = version + 1, verified_at = now(),
                    updated_at = now(), updated_by_user_id = $3
-                 where provider = 'slack'
+                 where provider = 'slack' and application_id = $4
                  returning provider, configuration, verified_external_identity, version, verified_at,
                            updated_at, updated_by_user_id`,
             [
@@ -294,8 +316,25 @@ async function lockProviderActivation(
   locks: Locks,
   transaction: Parameters<Locks["withTxLock"]>[0],
   provider: Provider,
+  applicationId: string,
 ): Promise<void> {
-  await locks.withTxLock(transaction, JSON.stringify(["provider-application", provider]));
+  await locks.withTxLock(
+    transaction,
+    JSON.stringify(["provider-application", ...applicationKey(provider, applicationId)]),
+  );
+}
+
+/**
+ * The lock and row key of one app. Slack runs several apps, each on its own key; every other
+ * provider runs one, keyed by the provider alone, which GitHub installation sync also takes.
+ */
+function applicationKey(provider: Provider, applicationId: string): readonly string[] {
+  return provider === "slack" ? [provider, applicationId] : [provider];
+}
+
+/** The app id that narrows a settings row to one app: Slack only, since others have one row. */
+function slackApplicationId(provider: Provider, applicationId: string): string | null {
+  return provider === "slack" ? applicationId : null;
 }
 
 async function requireCompatibleConnections(
@@ -304,12 +343,16 @@ async function requireCompatibleConnections(
   applicationId: string,
 ): Promise<void> {
   const table = connectionTable(provider);
+  // Another Slack app's connections belong to that app. A connection from before apps were
+  // recorded still conflicts, for every provider, until the single app in effect claims it.
   const conflicts = await transaction.query<{ conflict: boolean }>(
-    `select exists (
-       select 1 from ${table}
-       where provider_application_id is null or provider_application_id <> $1
-     ) as conflict`,
-    [applicationId],
+    provider === "slack"
+      ? `select exists (select 1 from ${table} where provider_application_id is null) as conflict`
+      : `select exists (
+           select 1 from ${table}
+           where provider_application_id is null or provider_application_id <> $1
+         ) as conflict`,
+    provider === "slack" ? [] : [applicationId],
   );
   if (conflicts.rows[0]?.conflict === true) {
     const error = new Error("provider application identity conflicts with active connections");
@@ -324,11 +367,13 @@ async function writeProviderActivation(
   applicationId: string,
   configurationVersion: number,
 ): Promise<void> {
-  // A provider runs one app, so activating an app replaces the last one.
+  // Slack runs several stored apps or one env-managed app (version 0); every other provider runs
+  // one, so activating its app replaces the last.
   await transaction.query(
     `delete from runtime_provider_activation
-     where provider = $1 and provider_application_id <> $2`,
-    [provider, applicationId],
+     where provider = $1 and provider_application_id <> $2
+       and ($1 <> 'slack' or $3::integer = 0 or configuration_version = 0)`,
+    [provider, applicationId, configurationVersion],
   );
   await transaction.query(
     `insert into runtime_provider_activation

@@ -709,6 +709,12 @@ class MemoryStore implements ProviderApplicationStore {
     return Promise.resolve([...this.values.values()].filter((value) => value !== undefined));
   }
 
+  list(provider: Provider) {
+    this.reads += 1;
+    const value = this.values.get(provider);
+    return Promise.resolve(value === undefined ? [] : [value]);
+  }
+
   save(input: Parameters<ProviderApplicationStore["save"]>[0]) {
     const previous = this.values.get(input.provider);
     if (previous?.version !== input.expectedVersion) {

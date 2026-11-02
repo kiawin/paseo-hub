@@ -115,7 +115,12 @@ export class ConnectionRepository {
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
-      await lockProviderApplication(this.locks, runtimeTransaction, attempt.provider);
+      await lockProviderApplication(
+        this.locks,
+        runtimeTransaction,
+        attempt.provider,
+        attempt.providerApplicationId,
+      );
       await requireConsumableAttempt(transaction, attempt);
       await consumeLockedAttempt(transaction, attempt.id);
     });
@@ -127,7 +132,12 @@ export class ConnectionRepository {
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
-      await lockProviderApplication(this.locks, runtimeTransaction, attempt.provider);
+      await lockProviderApplication(
+        this.locks,
+        runtimeTransaction,
+        attempt.provider,
+        attempt.providerApplicationId,
+      );
       await requireCurrentAttempt(transaction, attempt);
       await transaction
         .update(schema.organizationConnectionAttempts)
@@ -147,7 +157,7 @@ export class ConnectionRepository {
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
-      await lockProviderApplication(this.locks, runtimeTransaction, "github");
+      await lockProviderApplication(this.locks, runtimeTransaction, "github", null);
       await requireCurrentAttempt(transaction, attempt, input.providerApplicationId);
       await lockExternal(this.locks, runtimeTransaction, "github", String(input.installationId));
       const [existing] = await transaction
@@ -246,7 +256,12 @@ export class ConnectionRepository {
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
-      await lockProviderApplication(this.locks, runtimeTransaction, "slack");
+      await lockProviderApplication(
+        this.locks,
+        runtimeTransaction,
+        "slack",
+        input.providerApplicationId,
+      );
       if (providerConfiguration === undefined) {
         await requireCurrentAttempt(transaction, attempt, input.providerApplicationId);
       } else {
@@ -304,7 +319,12 @@ export class ConnectionRepository {
         const [stored] = await transaction
           .select({ version: schema.runtimeProviderConfiguration.version })
           .from(schema.runtimeProviderConfiguration)
-          .where(eq(schema.runtimeProviderConfiguration.provider, "slack"))
+          .where(
+            and(
+              eq(schema.runtimeProviderConfiguration.provider, "slack"),
+              eq(schema.runtimeProviderConfiguration.applicationId, input.providerApplicationId),
+            ),
+          )
           .for("update");
         if (stored?.version !== providerConfiguration.expectedVersion) {
           const error = new Error("provider configuration changed");
@@ -334,7 +354,12 @@ export class ConnectionRepository {
               updatedAt: sql`clock_timestamp()`,
               updatedByUserId: providerConfiguration.updatedByUserId,
             })
-            .where(eq(schema.runtimeProviderConfiguration.provider, "slack"));
+            .where(
+              and(
+                eq(schema.runtimeProviderConfiguration.provider, "slack"),
+                eq(schema.runtimeProviderConfiguration.applicationId, input.providerApplicationId),
+              ),
+            );
         }
         await writeProviderActivation(
           transaction,
@@ -366,7 +391,7 @@ export class ConnectionRepository {
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
-      await lockProviderApplication(this.locks, runtimeTransaction, "linear");
+      await lockProviderApplication(this.locks, runtimeTransaction, "linear", null);
       if (providerConfiguration === undefined) {
         await requireCurrentAttempt(transaction, attempt, input.providerApplicationId);
       } else {
@@ -531,7 +556,12 @@ export class ConnectionRepository {
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
-      await lockProviderApplication(this.locks, runtimeTransaction, provider);
+      await lockProviderApplication(
+        this.locks,
+        runtimeTransaction,
+        provider,
+        input.providerApplicationId,
+      );
       await requireCurrentAttempt(transaction, attempt, input.providerApplicationId);
       await lockExternal(this.locks, runtimeTransaction, provider, externalId);
       const conflict =
@@ -899,12 +929,20 @@ async function lockExternal(
   );
 }
 
+/**
+ * Serializes changes to one app's settings and activation. Slack runs several apps, each on its own
+ * key; every other provider runs one, keyed by the provider alone, which GitHub installation sync
+ * also takes. Keep the key in step with the provider application store's.
+ */
 async function lockProviderApplication(
   locks: Locks,
   transaction: TransactionHandle,
   provider: ConnectionProvider,
+  applicationId: string | null,
 ): Promise<void> {
-  await locks.withTxLock(transaction, JSON.stringify(["provider-application", provider]));
+  const key =
+    provider === "slack" && applicationId !== null ? [provider, applicationId] : [provider];
+  await locks.withTxLock(transaction, JSON.stringify(["provider-application", ...key]));
 }
 
 async function requireCurrentAttempt(
@@ -925,7 +963,12 @@ async function requireCurrentAttempt(
       configurationVersion: schema.runtimeProviderActivations.configurationVersion,
     })
     .from(schema.runtimeProviderActivations)
-    .where(eq(schema.runtimeProviderActivations.provider, attempt.provider))
+    .where(
+      and(
+        eq(schema.runtimeProviderActivations.provider, attempt.provider),
+        eq(schema.runtimeProviderActivations.providerApplicationId, applicationId),
+      ),
+    )
     .for("update");
   if (
     activation?.applicationId !== applicationId ||
@@ -947,13 +990,23 @@ async function requireConsumableAttempt(
     throw providerApplicationChanged();
   }
   const provider = attempt.provider;
+  // A Slack attempt configures one app among several; Linear runs one app, which it may replace.
+  const slackApplicationId = provider === "slack" ? attempt.providerApplicationId : null;
+  if (provider === "slack" && slackApplicationId === null) throw providerApplicationChanged();
   const [stored] = await transaction
     .select({
       version: schema.runtimeProviderConfiguration.version,
       identity: schema.runtimeProviderConfiguration.verifiedExternalIdentity,
     })
     .from(schema.runtimeProviderConfiguration)
-    .where(eq(schema.runtimeProviderConfiguration.provider, provider))
+    .where(
+      and(
+        eq(schema.runtimeProviderConfiguration.provider, provider),
+        slackApplicationId === null
+          ? undefined
+          : eq(schema.runtimeProviderConfiguration.applicationId, slackApplicationId),
+      ),
+    )
     .for("update");
   const [activation] = await transaction
     .select({
@@ -961,7 +1014,14 @@ async function requireConsumableAttempt(
       configurationVersion: schema.runtimeProviderActivations.configurationVersion,
     })
     .from(schema.runtimeProviderActivations)
-    .where(eq(schema.runtimeProviderActivations.provider, provider))
+    .where(
+      and(
+        eq(schema.runtimeProviderActivations.provider, provider),
+        slackApplicationId === null
+          ? undefined
+          : eq(schema.runtimeProviderActivations.providerApplicationId, slackApplicationId),
+      ),
+    )
     .for("update");
   if (stored?.version !== (attempt.expectedConfigurationVersion ?? undefined)) {
     throw providerApplicationChanged();
@@ -992,13 +1052,14 @@ async function requireSlackActivationCandidate(
   ) {
     throw providerApplicationChanged();
   }
-  const connections = await transaction
-    .select({ applicationId: schema.slackConnections.providerApplicationId })
+  // Another Slack app's connections belong to that app; a connection from before apps were
+  // recorded conflicts until the single app in effect claims it.
+  const legacy = await transaction
+    .select({ id: schema.slackConnections.id })
     .from(schema.slackConnections)
+    .where(isNull(schema.slackConnections.providerApplicationId))
     .for("update");
-  if (connections.some((connection) => connection.applicationId !== bindingApplicationId)) {
-    throw providerApplicationChanged();
-  }
+  if (legacy.length > 0) throw providerApplicationChanged();
 }
 
 async function requireLinearActivationCandidate(
@@ -1030,13 +1091,17 @@ async function writeProviderActivation(
   applicationId: string,
   configurationVersion: number,
 ): Promise<void> {
-  // A provider runs one app, so activating an app replaces the last one.
+  // Slack runs several stored apps or one env-managed app (version 0); every other provider runs
+  // one, so activating its app replaces the last.
   await transaction
     .delete(schema.runtimeProviderActivations)
     .where(
       and(
         eq(schema.runtimeProviderActivations.provider, provider),
         ne(schema.runtimeProviderActivations.providerApplicationId, applicationId),
+        provider === "slack" && configurationVersion !== 0
+          ? eq(schema.runtimeProviderActivations.configurationVersion, 0)
+          : undefined,
       ),
     );
   await transaction
