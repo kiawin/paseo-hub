@@ -145,6 +145,9 @@ function environmentVariables(provider: Provider): string {
  */
 function credentialMessage(provider: Provider, subject: string | undefined): string {
   if (subject === "identityMismatch") return identityMismatchMessage(provider);
+  if (provider === "slack" && subject === "applicationMismatch") {
+    return "These tokens belong to a different Slack app than the one you are changing. Nothing was saved. Copy both tokens from that app, or add the other app as a new Slack app.";
+  }
   if (provider === "github") {
     if (subject === "privateKey") {
       return "GitHub rejected the Private key for this App. Nothing was saved. Generate a new private key on the App's settings page, paste the whole .pem file, then verify again.";

@@ -138,11 +138,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       runtime: providerRuntime,
       verifier: providerVerifier,
       slackSocketVerifier: createSlackSocketInstallationVerifier(),
-      slackDelivery: {
-        // Until the settings service picks an app, status and retry use the only Slack app.
-        status: () => providerRuntime.slackDeliveries()[0]?.status() ?? { state: "stopped" },
-        retry: () => providerRuntime.slackDeliveries()[0]?.retry() ?? Promise.resolve(),
-      },
+      slackDeliveries: () => providerRuntime.slackDeliveries(),
       inventory: providerInventory,
       callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
       beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
@@ -174,11 +170,12 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       inventory: providerInventory,
       callbackOrigin: identity.appUrl,
     });
-    for (const { provider, error } of activationFailures) {
+    for (const { provider, applicationId, error } of activationFailures) {
       reportFailure(error, {
         operation: "provider_application.activate_at_startup",
         component: "provider_applications",
         provider,
+        ...(applicationId === undefined ? {} : { applicationId }),
       });
     }
     const receiptRetention = new ReceiptRetention(runtime);

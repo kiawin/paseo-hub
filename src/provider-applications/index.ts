@@ -221,7 +221,10 @@ export interface ProviderApplicationView {
 
 export interface ProviderApplicationOverview {
   callbackOrigin: string;
-  providers: Record<Provider, ProviderApplicationView>;
+  /** Slack runs several apps, one view each, and has none until one is saved; the others one view. */
+  providers: Record<Exclude<Provider, "slack">, ProviderApplicationView> & {
+    slack: readonly ProviderApplicationView[];
+  };
 }
 
 export interface ProviderApplicationResult {
@@ -265,7 +268,8 @@ export type ProviderApplicationErrorCode =
   | "identityConflict"
   | "configurationConflict"
   | "managedByEnvironment"
-  | "httpsRequired";
+  | "httpsRequired"
+  | "slackApplicationRequired";
 
 export class ProviderApplicationError extends Error {
   constructor(
@@ -331,23 +335,39 @@ export function providerApplicationReturnRoute(
 
 export interface ProviderApplications {
   overview(request: Request): Promise<ProviderApplicationOverview>;
+  /**
+   * For Slack, `applicationId` names the app being changed; without it the save adds a new app.
+   * Every other provider has one app and takes none.
+   */
   verifyAndSave(
     request: Request,
     provider: Provider,
     input: ProviderApplicationConfiguration,
     surface?: ProviderApplicationSurface,
+    applicationId?: string,
   ): Promise<ProviderApplicationSaveResult>;
+  /** For Slack, `applicationId` picks the app; without it, the only Slack app. */
   beginConnection(
     request: Request,
     provider: Provider,
     organizationId: string,
     surface?: ProviderApplicationSurface,
+    applicationId?: string,
   ): Promise<{ url: string }>;
+  /** `applicationId` names the app being changed; without it the tokens add a new app. */
   configureSlackSocket(
     request: Request,
-    input: { appToken: string; botToken: string; expectedVersion?: number },
+    input: { appToken: string; botToken: string; expectedVersion?: number; applicationId?: string },
   ): Promise<ProviderApplicationResult>;
-  retrySlackSocket(request: Request): Promise<void>;
+  /** `applicationId` picks the app; without it, the only app with Socket Mode delivery. */
+  retrySlackSocket(request: Request, applicationId?: string): Promise<void>;
+}
+
+/** One Slack app's Socket Mode delivery. */
+export interface SlackApplicationDelivery {
+  applicationId: string;
+  status(): SlackDeliveryStatus;
+  retry(): Promise<void>;
 }
 
 interface ProviderApplicationsOptions {
@@ -368,72 +388,37 @@ interface ProviderApplicationsOptions {
     begin: (request: Request) => Promise<{ url: string }>,
   ) => Promise<{ url: string }>;
   slackSocketVerifier?: SlackSocketInstallationVerifier;
-  slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
+  slackDeliveries?: () => readonly SlackApplicationDelivery[];
 }
 
 export function createProviderApplications(
   options: ProviderApplicationsOptions,
 ): ProviderApplications {
-  const queues = new Map<Provider, Promise<void>>();
+  const queues = new Map<string, Promise<void>>();
   options.runtime.onSlackInstallation?.((input) =>
-    serialize(queues, "slack", () => completeSlackInstallation(options, input)),
+    serialize(queues, queueKey("slack", input.installation.appId), () =>
+      completeSlackInstallation(options, input),
+    ),
   );
   options.runtime.onLinearInstallation?.((input) =>
-    serialize(queues, "linear", () => completeLinearInstallation(options, input)),
+    serialize(queues, queueKey("linear"), () => completeLinearInstallation(options, input)),
   );
 
   return {
     async overview(request) {
       await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
-      const stored = new Map(
-        (await options.store.readAll()).map((value) => [value.provider, value]),
-      );
-      const entries = await Promise.all(
-        // eslint-disable-next-line complexity -- this is the single projection of provider state.
-        PROVIDERS.map(async (provider) => {
-          const environment = options.environment[provider];
-          const persisted = stored.get(provider);
-          const resolved = environment ?? persisted?.configuration;
-          const connections = await options.inventory.connectedIdentities(provider);
-          const identity = options.runtime.identity?.(provider) ?? persisted?.identity ?? null;
-          const status = providerStatus(environment !== undefined, identity, connections);
-          const configurationVersion = environment === undefined ? (persisted?.version ?? null) : 0;
-          const deliveryStatus = provider === "slack" ? options.slackDelivery?.status() : undefined;
-          const view: ProviderApplicationView = {
-            provider,
-            status,
-            managedByEnvironment: environment !== undefined,
-            identifiers: resolved === undefined ? {} : publicIdentifiers(resolved),
-            identity,
-            connections,
-            eventsConfigured: acceptsEvents(resolved),
-            lastEventAt:
-              provider === "discord" || identity === null || configurationVersion === null
-                ? null
-                : ((
-                    await options.inventory.lastEventAt(provider, identity, configurationVersion)
-                  )?.toISOString() ?? null),
-            replaceable: connections.length === 0,
-            configurationVersion,
-            ...(deliveryStatus === undefined ? {} : { deliveryStatus }),
-          };
-          return [provider, view] as const;
-        }),
-      );
-      const [github, slack, discord, linear] = entries.map(([, view]) => view);
-      if (
-        github === undefined ||
-        slack === undefined ||
-        discord === undefined ||
-        linear === undefined
-      ) {
-        throw new Error("provider overview is incomplete");
-      }
+      const stored = await options.store.readAll();
+      const [github, slack, discord, linear] = await Promise.all([
+        singleProviderView(options, "github", stored),
+        slackApplicationViews(options, stored),
+        singleProviderView(options, "discord", stored),
+        singleProviderView(options, "linear", stored),
+      ]);
       return { callbackOrigin, providers: { github, slack, discord, linear } };
     },
 
-    async verifyAndSave(request, provider, input, surface) {
+    async verifyAndSave(request, provider, input, surface, applicationId) {
       rejectMutation(options, request);
       const account = await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
@@ -441,7 +426,15 @@ export function createProviderApplications(
         throw new ProviderApplicationError("managedByEnvironment");
       }
       if (input.provider !== provider) throw new ProviderApplicationError("invalidInput");
-      return serialize<ProviderApplicationSaveResult>(queues, provider, () => {
+      // A Slack app is its app id, so changing one app can never save another app's settings.
+      if (
+        applicationId !== undefined &&
+        (input.provider !== "slack" || input.appId !== applicationId)
+      ) {
+        throw new ProviderApplicationError("invalidInput");
+      }
+      const key = queueKey(provider, input.provider === "slack" ? input.appId : undefined);
+      return serialize<ProviderApplicationSaveResult>(queues, key, () => {
         const returnRoute = providerApplicationReturnRoute(surface);
         if (provider === "slack" && input.provider === "slack") {
           return beginSlackConfiguration(
@@ -467,20 +460,25 @@ export function createProviderApplications(
       });
     },
 
-    async beginConnection(request, provider, organizationId, surface) {
+    async beginConnection(request, provider, organizationId, surface, applicationId) {
       rejectMutation(options, request);
       await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
       if (provider === "linear") requireHttpsOrigin(callbackOrigin);
-      return serialize(queues, provider, async () => {
-        const stored = await options.store.read(provider);
+      if (provider !== "slack" && applicationId !== undefined) {
+        throw new ProviderApplicationError("invalidInput");
+      }
+      const target =
+        provider === "slack" ? await slackApplicationId(options, applicationId) : undefined;
+      return serialize(queues, queueKey(provider, target), async () => {
+        const stored = await options.store.read(provider, target);
         const configuration = options.environment[provider] ?? stored?.configuration;
         if (configuration === undefined || options.beginCandidateConnection === undefined) {
           throw new ProviderApplicationError("invalidInput");
         }
         const configurationVersion =
           options.environment[provider] === undefined ? stored!.version : 0;
-        const identity = options.runtime.identity?.(provider) ?? stored?.identity;
+        const identity = options.runtime.identity?.(provider, target) ?? stored?.identity;
         if (identity === undefined) throw new ProviderApplicationError("invalidInput");
         let candidate: ProviderRuntimeCandidate | undefined;
         try {
@@ -518,21 +516,25 @@ export function createProviderApplications(
       if (options.slackSocketVerifier === undefined) {
         throw new ProviderApplicationError("internal");
       }
-      return serialize(queues, "slack", async () => {
-        if (!input.appToken.startsWith("xapp-") || !input.botToken.startsWith("xoxb-")) {
-          throw new ProviderApplicationError("invalidInput");
+      if (!input.appToken.startsWith("xapp-") || !input.botToken.startsWith("xoxb-")) {
+        throw new ProviderApplicationError("invalidInput");
+      }
+      const organizationId = account.session.activeOrganizationId;
+      if (organizationId === null) throw new ProviderApplicationError("invalidInput");
+      // The tokens name their app, so they are verified before the save queues behind that app.
+      let installation: Awaited<ReturnType<SlackSocketInstallationVerifier["verify"]>>;
+      try {
+        installation = await options.slackSocketVerifier.verify(input.appToken, input.botToken);
+      } catch (error) {
+        if (error instanceof ProviderVerificationError) {
+          throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
         }
-        const organizationId = account.session.activeOrganizationId;
-        if (organizationId === null) throw new ProviderApplicationError("invalidInput");
-        let installation: Awaited<ReturnType<SlackSocketInstallationVerifier["verify"]>>;
-        try {
-          installation = await options.slackSocketVerifier!.verify(input.appToken, input.botToken);
-        } catch (error) {
-          if (error instanceof ProviderVerificationError) {
-            throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
-          }
-          throw new ProviderApplicationError("internal", undefined, { cause: error });
-        }
+        throw new ProviderApplicationError("internal", undefined, { cause: error });
+      }
+      if (input.applicationId !== undefined && installation.appId !== input.applicationId) {
+        throw new ProviderApplicationError("credentialsRejected", "applicationMismatch");
+      }
+      return serialize(queues, queueKey("slack", installation.appId), async () => {
         const configuration = {
           provider: "slack" as const,
           transport: "socket" as const,
@@ -583,14 +585,141 @@ export function createProviderApplications(
         }
       });
     },
-    async retrySlackSocket(request) {
+    async retrySlackSocket(request, applicationId) {
       rejectMutation(options, request);
       await requireOperator(options, request);
-      if (options.slackDelivery === undefined) {
-        throw new ProviderApplicationError("invalidInput");
+      const deliveries = options.slackDeliveries?.() ?? [];
+      if (applicationId === undefined && deliveries.length > 1) {
+        throw new ProviderApplicationError("slackApplicationRequired");
       }
-      await options.slackDelivery.retry();
+      const delivery =
+        applicationId === undefined
+          ? deliveries[0]
+          : deliveries.find((candidate) => candidate.applicationId === applicationId);
+      if (delivery === undefined) throw new ProviderApplicationError("invalidInput");
+      await delivery.retry();
     },
+  };
+}
+
+/** Saves queue per provider, and per app for Slack, so one Slack app never waits on another. */
+function queueKey(provider: Provider, applicationId?: string): string {
+  return applicationId === undefined ? provider : `${provider}:${applicationId}`;
+}
+
+/**
+ * The Slack app an action is for: the env-managed app, the one named, or the only stored app.
+ * With several stored apps and none named there is no right guess, so the caller must name one.
+ */
+async function slackApplicationId(
+  options: ProviderApplicationsOptions,
+  applicationId: string | undefined,
+): Promise<string> {
+  const environment = options.environment.slack;
+  if (environment !== undefined) {
+    const environmentId = slackConfigurationAppId(environment);
+    if (applicationId !== undefined && applicationId !== environmentId) {
+      throw new ProviderApplicationError("invalidInput");
+    }
+    return environmentId;
+  }
+  if (applicationId !== undefined) return applicationId;
+  const stored = await options.store.list("slack");
+  if (stored.length > 1) throw new ProviderApplicationError("slackApplicationRequired");
+  const only = stored[0];
+  if (only === undefined) throw new ProviderApplicationError("invalidInput");
+  return only.identity.id;
+}
+
+function slackConfigurationAppId(configuration: ProviderApplicationConfiguration): string {
+  if (configuration.provider !== "slack") throw new Error("Slack configuration expected");
+  return configuration.appId;
+}
+
+async function singleProviderView(
+  options: ProviderApplicationsOptions,
+  provider: Exclude<Provider, "slack">,
+  stored: readonly StoredProviderApplication[],
+): Promise<ProviderApplicationView> {
+  const persisted = stored.find((value) => value.provider === provider);
+  return applicationView(options, {
+    provider,
+    environment: options.environment[provider],
+    persisted,
+    identity: options.runtime.identity?.(provider) ?? persisted?.identity ?? null,
+    connections: await options.inventory.connectedIdentities(provider),
+    deliveryStatus: undefined,
+  });
+}
+
+/**
+ * One view per Slack app: the env-managed app alone, or every stored app. Each sees only its own
+ * connections; a legacy connection with no app belongs to the only app when there is one.
+ */
+async function slackApplicationViews(
+  options: ProviderApplicationsOptions,
+  stored: readonly StoredProviderApplication[],
+): Promise<readonly ProviderApplicationView[]> {
+  const environment = options.environment.slack;
+  const storedSlack = stored.filter((value) => value.provider === "slack");
+  const applicationIds =
+    environment === undefined
+      ? storedSlack.map((value) => value.identity.id)
+      : [slackConfigurationAppId(environment)];
+  if (applicationIds.length === 0) return [];
+  const connections = await options.inventory.connectedIdentities("slack");
+  const deliveries = options.slackDeliveries?.();
+  return Promise.all(
+    applicationIds.map((applicationId) => {
+      const persisted = storedSlack.find((value) => value.identity.id === applicationId);
+      const delivery = deliveries?.find((value) => value.applicationId === applicationId);
+      return applicationView(options, {
+        provider: "slack",
+        environment,
+        persisted,
+        identity: options.runtime.identity?.("slack", applicationId) ?? persisted?.identity ?? null,
+        connections: connections.filter(
+          (connection) =>
+            connection.applicationId === applicationId ||
+            (connection.applicationId === null && applicationIds.length === 1),
+        ),
+        deliveryStatus:
+          deliveries === undefined ? undefined : (delivery?.status() ?? { state: "stopped" }),
+      });
+    }),
+  );
+}
+
+async function applicationView(
+  options: ProviderApplicationsOptions,
+  input: {
+    provider: Provider;
+    environment: ProviderApplicationConfiguration | undefined;
+    persisted: StoredProviderApplication | undefined;
+    identity: ProviderApplicationIdentity | null;
+    connections: readonly ConnectedProviderIdentity[];
+    deliveryStatus: SlackDeliveryStatus | undefined;
+  },
+): Promise<ProviderApplicationView> {
+  const { provider, environment, identity, connections } = input;
+  const resolved = environment ?? input.persisted?.configuration;
+  const configurationVersion = environment === undefined ? (input.persisted?.version ?? null) : 0;
+  const lastEventAt =
+    provider === "discord" || identity === null || configurationVersion === null
+      ? null
+      : await options.inventory.lastEventAt(provider, identity, configurationVersion);
+  return {
+    provider,
+    status: providerStatus(environment !== undefined, identity, connections),
+    managedByEnvironment: environment !== undefined,
+    identifiers: resolved === undefined ? {} : publicIdentifiers(resolved),
+    identity,
+    connections,
+    eventsConfigured: acceptsEvents(resolved),
+    lastEventAt: lastEventAt?.toISOString() ?? null,
+    replaceable: connections.length === 0,
+    configurationVersion,
+    ...(input.deliveryStatus === undefined ? {} : { deliveryStatus: input.deliveryStatus }),
   };
 }
 
@@ -627,19 +756,19 @@ async function safeCallbackOrigin(
 }
 
 function serialize<T>(
-  queues: Map<Provider, Promise<void>>,
-  provider: Provider,
+  queues: Map<string, Promise<void>>,
+  key: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const previous = queues.get(provider) ?? Promise.resolve();
+  const previous = queues.get(key) ?? Promise.resolve();
   const result = previous.catch(() => undefined).then(operation);
   const settled = result.then(
     () => undefined,
     () => undefined,
   );
-  queues.set(provider, settled);
+  queues.set(key, settled);
   void settled.finally(() => {
-    if (queues.get(provider) === settled) queues.delete(provider);
+    if (queues.get(key) === settled) queues.delete(key);
   });
   return result;
 }
@@ -706,11 +835,27 @@ function sameExternalIdentity(
   return left.provider === right.provider && left.id === right.id;
 }
 
+/**
+ * The connections an app answers for. A Slack app owns its own and the legacy ones with no app;
+ * another Slack app's connections are that app's business. Every other provider has one app, so
+ * every connection is its own.
+ */
+function connectionsOf(
+  identity: ProviderApplicationIdentity,
+  connections: readonly ConnectedProviderIdentity[],
+): readonly ConnectedProviderIdentity[] {
+  if (identity.provider !== "slack") return connections;
+  return connections.filter(
+    (connection) => connection.applicationId === null || connection.applicationId === identity.id,
+  );
+}
+
 function identityConflictsWithConnections(
   identity: ProviderApplicationIdentity,
   previous: StoredProviderApplication | undefined,
-  connections: readonly ConnectedProviderIdentity[],
+  allConnections: readonly ConnectedProviderIdentity[],
 ): boolean {
+  const connections = connectionsOf(identity, allConnections);
   if (connections.length === 0) return false;
   if (
     connections.some(
@@ -771,63 +916,112 @@ export async function activateProviderApplicationsAtStartup(options: {
   verifier: ProviderApplicationVerifier;
   inventory: ProviderApplicationInventory;
   callbackOrigin: string;
-}): Promise<readonly { provider: Provider; error: unknown }[]> {
-  const failures: { provider: Provider; error: unknown }[] = [];
-  const storedProviders = new Map(
-    (await options.store.readAll()).map((configuration) => [configuration.provider, configuration]),
-  );
+}): Promise<readonly { provider: Provider; applicationId?: string; error: unknown }[]> {
+  const failures: { provider: Provider; applicationId?: string; error: unknown }[] = [];
+  const stored = await options.store.readAll();
   for (const provider of PROVIDERS) {
-    const environmentConfiguration = options.environment[provider];
-    const stored = storedProviders.get(provider);
-    const configuration = environmentConfiguration ?? stored?.configuration;
-    if (configuration === undefined) continue;
-    try {
-      const identity = await startupIdentity(
-        provider,
-        environmentConfiguration,
-        stored,
-        options.verifier,
-      );
-      const connections = await options.inventory.connectedIdentities(provider);
-      const claimLegacyConnections =
-        stored === undefined &&
-        connections.length > 0 &&
-        connections.every((connection) => connection.applicationId === null);
-      if (
-        identityConflictsWithConnections(identity, stored, connections) &&
-        !claimLegacyConnections
-      ) {
-        throw new ProviderApplicationError("identityConflict", stored?.identity.name);
-      }
-      let candidate: ProviderRuntimeCandidate | undefined;
+    for (const target of startupTargets(provider, options.environment[provider], stored)) {
       try {
-        const configurationVersion = environmentConfiguration === undefined ? stored!.version : 0;
-        candidate = await options.runtime.prepare(
-          provider,
-          configuration,
-          options.callbackOrigin,
-          identity,
-          configurationVersion,
-        );
-        await candidate.start();
-        if (
-          claimLegacyConnections &&
-          !(await options.inventory.claimLegacyConnections(provider, identity))
-        ) {
-          throw new ProviderApplicationError("identityConflict");
-        }
-        await options.store.activate({ provider, identity, configurationVersion });
-        candidate.publish();
-        candidate = undefined;
+        await activateAtStartup(options, provider, target.environment, target.stored);
       } catch (error) {
-        await closeCandidate(candidate, provider, "activate_at_startup");
-        throw error;
+        failures.push({
+          provider,
+          ...(target.applicationId === undefined ? {} : { applicationId: target.applicationId }),
+          error,
+        });
       }
-    } catch (error) {
-      failures.push({ provider, error });
     }
   }
   return failures;
+}
+
+/**
+ * What starts for one provider: its env-managed app, which is then its only app, or every stored
+ * app — one for most providers, any number for Slack. An env-managed Slack app keeps the stored
+ * row of the same app, if any, for the identity check.
+ */
+function startupTargets(
+  provider: Provider,
+  environment: ProviderApplicationConfiguration | undefined,
+  stored: readonly StoredProviderApplication[],
+): readonly {
+  applicationId: string | undefined;
+  environment: ProviderApplicationConfiguration | undefined;
+  stored: StoredProviderApplication | undefined;
+}[] {
+  const own = stored.filter((value) => value.provider === provider);
+  if (provider !== "slack") {
+    if (environment === undefined && own[0] === undefined) return [];
+    return [{ applicationId: undefined, environment, stored: own[0] }];
+  }
+  if (environment === undefined) {
+    return own.map((value) => ({
+      applicationId: value.identity.id,
+      environment: undefined,
+      stored: value,
+    }));
+  }
+  const applicationId = slackConfigurationAppId(environment);
+  return [
+    {
+      applicationId,
+      environment,
+      stored: own.find((value) => value.identity.id === applicationId),
+    },
+  ];
+}
+
+async function activateAtStartup(
+  options: Parameters<typeof activateProviderApplicationsAtStartup>[0],
+  provider: Provider,
+  environmentConfiguration: ProviderApplicationConfiguration | undefined,
+  stored: StoredProviderApplication | undefined,
+): Promise<void> {
+  const configuration = environmentConfiguration ?? stored?.configuration;
+  if (configuration === undefined) return;
+  const identity = await startupIdentity(
+    provider,
+    environmentConfiguration,
+    stored,
+    options.verifier,
+  );
+  const allConnections = await options.inventory.connectedIdentities(provider);
+  // Claiming writes, so it runs only when every connection is unowned: with another app's rows
+  // present it would take the legacy rows and still fail, and the identity check refuses first.
+  const claimLegacyConnections =
+    stored === undefined &&
+    allConnections.length > 0 &&
+    allConnections.every((connection) => connection.applicationId === null);
+  if (
+    identityConflictsWithConnections(identity, stored, allConnections) &&
+    !claimLegacyConnections
+  ) {
+    throw new ProviderApplicationError("identityConflict", stored?.identity.name);
+  }
+  let candidate: ProviderRuntimeCandidate | undefined;
+  try {
+    const configurationVersion = environmentConfiguration === undefined ? stored!.version : 0;
+    candidate = await options.runtime.prepare(
+      provider,
+      configuration,
+      options.callbackOrigin,
+      identity,
+      configurationVersion,
+    );
+    await candidate.start();
+    if (
+      claimLegacyConnections &&
+      !(await options.inventory.claimLegacyConnections(provider, identity))
+    ) {
+      throw new ProviderApplicationError("identityConflict");
+    }
+    await options.store.activate({ provider, identity, configurationVersion });
+    candidate.publish();
+    candidate = undefined;
+  } catch (error) {
+    await closeCandidate(candidate, provider, "activate_at_startup");
+    throw error;
+  }
 }
 
 async function startupIdentity(
@@ -871,7 +1065,7 @@ async function beginSlackConfiguration(
   returnRoute: string,
 ): Promise<ProviderApplicationContinuation> {
   requireHttpsOrigin(callbackOrigin);
-  const previous = await options.store.read("slack");
+  const previous = await options.store.read("slack", input.appId);
   if (previous?.version !== input.expectedVersion) {
     throw new ProviderApplicationError("configurationConflict");
   }
@@ -1069,7 +1263,7 @@ async function completeSlackInstallation(
   if (configuration.provider !== "slack" || configuration.appId !== input.installation.appId) {
     throw new ProviderApplicationError("credentialsRejected");
   }
-  const previous = await options.store.read("slack");
+  const previous = await options.store.read("slack", input.installation.appId);
   const connections = await options.inventory.connectedIdentities("slack");
   const identity: ProviderApplicationIdentity = {
     provider: "slack",

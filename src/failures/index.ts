@@ -25,6 +25,8 @@ export interface FailureContext {
   operation: string;
   component: string;
   provider?: "github" | "slack" | "discord" | "linear" | "stripe";
+  /** The provider app, where a provider runs several (Slack). */
+  applicationId?: string;
   requestId?: string;
   status?: number;
   organizationSlug?: string;
@@ -176,6 +178,8 @@ const FAILURE_CODES = new Map<string, FailureKind>([
   ["invalidResponse", "upstreamUnavailable"],
   ["configurationConflict", "conflict"],
   ["identityConflict", "conflict"],
+  // A page that loaded with one Slack app acted without naming one after a second was added.
+  ["slackApplicationRequired", "conflict"],
   ["conflict", "conflict"],
 ]);
 

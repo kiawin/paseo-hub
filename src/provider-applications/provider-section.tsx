@@ -157,7 +157,9 @@ export function ProviderSection({
     onError: () => setOutcome({ tone: "error", message: unreachable(guide.name) }),
   });
   const retryDelivery = useMutation({
-    mutationFn: useServerFn(retrySlackSocketDelivery) as (input: {}) => Promise<VoidResponse>,
+    mutationFn: useServerFn(retrySlackSocketDelivery) as (
+      input: Parameters<typeof retrySlackSocketDelivery>[0],
+    ) => Promise<VoidResponse>,
     onSuccess: async (response) => {
       if (response.status === "error") {
         setOutcome({ tone: "error", message: response.error.message });
@@ -269,7 +271,7 @@ export function ProviderSection({
           connecting={connect.isPending || leaving}
           replaceRef={replace}
           onConnect={startConnection}
-          onRetry={() => retryDelivery.mutate({})}
+          onRetry={() => retryDelivery.mutate({ data: {} })}
           onReplace={() => {
             setErrors({});
             setOutcome(undefined);

@@ -1211,11 +1211,7 @@ async function composeProviderApplications(input: {
     runtime: providerRuntime,
     verifier,
     slackSocketVerifier: input.slackSocket.verifier(),
-    slackDelivery: {
-      // Until the settings service picks an app, status and retry use the only Slack app.
-      status: () => providerRuntime.slackDeliveries()[0]?.status() ?? { state: "stopped" },
-      retry: () => providerRuntime.slackDeliveries()[0]?.retry() ?? Promise.resolve(),
-    },
+    slackDeliveries: () => providerRuntime.slackDeliveries(),
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
     beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
