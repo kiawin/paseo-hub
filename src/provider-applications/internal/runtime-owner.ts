@@ -23,6 +23,7 @@ import type {
 import { parseProviderApplicationConfiguration } from "./store.js";
 import type { SlackIntakeHealth, SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
+import { routeSlackWebhookRequest } from "../../triggers/slack/webhook.js";
 
 /**
  * One provider's runtime. Trigger resources and the source handler belong to the provider, so an app
@@ -43,6 +44,8 @@ interface Slot {
 interface ActiveRegistration {
   provider: Provider;
   applicationId: string;
+  /** The settings it was built from; a Slack webhook app's signing secret routes its requests. */
+  configuration: ProviderApplicationConfiguration;
   registration: ProviderRegistration;
   triggers: readonly TriggerProvider[];
   sourcesStarted: boolean;
@@ -169,6 +172,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     const active: ActiveRegistration = {
       provider,
       applicationId: identity.id,
+      configuration,
       registration,
       triggers:
         triggerResources === undefined
@@ -484,6 +488,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               {
                 name: provider === "github" ? "webhook" : `${provider}.events`,
                 handle: (request) => {
+                  if (provider === "slack") return this.routeSlackEvents(state, request);
                   const active = state.slots.values().next().value?.active;
                   const handler = active?.registration.requests[0];
                   return active === undefined || handler === undefined
@@ -624,6 +629,32 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   }
 
   /**
+   * Every Slack webhook app shares one events URL, so a request goes to the app whose signing
+   * secret verifies it. Socket Mode apps take no requests.
+   */
+  private routeSlackEvents(state: ProviderState, request: Request): Promise<Response> {
+    const apps = activeRegistrations(state).flatMap((active) => {
+      const handler = active.registration.requests[0];
+      const configuration = active.configuration;
+      if (
+        handler === undefined ||
+        configuration.provider !== "slack" ||
+        configuration.transport !== "webhook"
+      ) {
+        return [];
+      }
+      return [
+        {
+          signingSecret: configuration.signingSecret,
+          handle: (verified: Request) => this.withLease(active, () => handler.handle(verified)),
+        },
+      ];
+    });
+    if (apps.length === 0) return Promise.resolve(new Response("Not Found", { status: 404 }));
+    return routeSlackWebhookRequest(request, apps);
+  }
+
+  /**
    * The registration that starts or disconnects a connection. A Slack start names its app, or uses
    * the only one. A disconnect always goes to the connection's own app, whose client revokes its
    * token; a Socket Mode app has no client to do that, so an `applicationId` in the URL is ignored.
@@ -694,6 +725,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       const restored: ActiveRegistration = {
         provider,
         applicationId: snapshot.providerApplicationId ?? "",
+        configuration,
         registration,
         triggers: [],
         sourcesStarted: false,

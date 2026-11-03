@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import type { DurableProviderEvent, ProviderEventAcceptance } from "../../db/types.js";
-import { createSlackWebhookSource, verifySlackSignature } from "./webhook.js";
+import {
+  createSlackWebhookSource,
+  routeSlackWebhookRequest,
+  verifySlackSignature,
+} from "./webhook.js";
 
 const SECRET = "slack-signing-secret";
 const APP_ID = "A123";
@@ -209,6 +213,115 @@ describe("Slack webhook", () => {
   });
 });
 
+describe("Slack webhook apps sharing one events URL", () => {
+  const SECRET_B = "slack-signing-secret-b";
+
+  /** Apps A1 (SECRET) and B1 (SECRET_B), each a real webhook source that records what it accepts. */
+  function twoApps() {
+    const accepted: { app: string; payload: unknown }[] = [];
+    const handled: string[] = [];
+    const app = (appId: string, signingSecret: string) => {
+      const endpoint = createSlackWebhookSource({
+        appId,
+        signingSecret,
+        now: () => NOW,
+        accept: (input) => {
+          accepted.push({ app: appId, payload: input.payload });
+          return Promise.resolve({ status: "duplicate", receiptId: input.deliveryId });
+        },
+      });
+      return {
+        signingSecret,
+        handle: (incoming: Request) => {
+          handled.push(appId);
+          return endpoint.handle(incoming);
+        },
+      };
+    };
+    const apps = [app("A1", SECRET), app("B1", SECRET_B)];
+    return {
+      accepted,
+      handled,
+      route: (incoming: Request) => routeSlackWebhookRequest(incoming, apps, NOW),
+    };
+  }
+
+  it("hands a request to the app whose signing secret verifies it, with the whole body", async () => {
+    const { accepted, handled, route } = twoApps();
+    const response = await route(request({ ...mentionEnvelope(), api_app_id: "B1" }, SECRET_B));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(handled, ["B1"]);
+    // The event B accepted is the one sent, parsed from the whole body.
+    assert.deepEqual(
+      accepted.map(({ app, payload }) => ({ app, payload: summary(payload) })),
+      [{ app: "B1", payload: { id: "Ev123", appId: "B1", content: "<@U999> investigate" } }],
+    );
+  });
+
+  it("leaves the app-id check to the app whose secret signed the request", async () => {
+    const { accepted, handled, route } = twoApps();
+
+    const response = await route(request({ ...mentionEnvelope(), api_app_id: "B1" }, SECRET));
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(handled, ["A1"]);
+    assert.deepEqual(accepted, []);
+  });
+
+  it("refuses an unsigned or wrongly signed request before any app sees it", async () => {
+    const { handled, route } = twoApps();
+    const unsigned = new Request("https://hub.test/api/integrations/slack/events", {
+      method: "POST",
+      body: JSON.stringify(mentionEnvelope()),
+    });
+
+    assert.equal((await route(unsigned)).status, 401);
+    assert.equal((await route(request(mentionEnvelope(), "someone-else"))).status, 401);
+    assert.deepEqual(handled, []);
+  });
+
+  it("refuses a body over 1 MiB before any app sees it", async () => {
+    const { handled, route } = twoApps();
+    const timestamp = String(NOW / 1_000);
+    const body = "x".repeat(1_048_577);
+    const oversized = new Request("https://hub.test/api/integrations/slack/events", {
+      method: "POST",
+      headers: {
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": sign(timestamp, body, SECRET_B),
+      },
+      body,
+    });
+
+    assert.equal((await route(oversized)).status, 413);
+    assert.deepEqual(handled, []);
+  });
+
+  it("answers URL verification signed by either app", async () => {
+    const { handled, route } = twoApps();
+    for (const [appId, secret] of [
+      ["A1", SECRET],
+      ["B1", SECRET_B],
+    ] as const) {
+      const response = await route(
+        request({ type: "url_verification", api_app_id: appId, challenge: `for-${appId}` }, secret),
+      );
+      assert.deepEqual(await response.json(), { challenge: `for-${appId}` });
+    }
+    assert.deepEqual(handled, ["A1", "B1"]);
+  });
+});
+
+function summary(payload: unknown) {
+  if (typeof payload !== "object" || payload === null) return payload;
+  return {
+    id: Reflect.get(payload, "id") as unknown,
+    appId: Reflect.get(payload, "appId") as unknown,
+    content: Reflect.get(payload, "content") as unknown,
+  };
+}
+
 function source(
   accept: (
     input: Parameters<Parameters<typeof createSlackWebhookSource>[0]["accept"]>[0],
@@ -217,7 +330,7 @@ function source(
   return createSlackWebhookSource({ appId: APP_ID, signingSecret: SECRET, now: () => NOW, accept });
 }
 
-function request(payload: unknown): Request {
+function request(payload: unknown, secret = SECRET): Request {
   const body = JSON.stringify(payload);
   const timestamp = String(NOW / 1_000);
   return new Request("https://hub.test/api/integrations/slack/events", {
@@ -225,14 +338,14 @@ function request(payload: unknown): Request {
     headers: {
       "content-type": "application/json",
       "x-slack-request-timestamp": timestamp,
-      "x-slack-signature": sign(timestamp, body),
+      "x-slack-signature": sign(timestamp, body, secret),
     },
     body,
   });
 }
 
-function sign(timestamp: string, body: string | Uint8Array): string {
-  return `v0=${createHmac("sha256", SECRET).update("v0:").update(timestamp).update(":").update(body).digest("hex")}`;
+function sign(timestamp: string, body: string | Uint8Array, secret = SECRET): string {
+  return `v0=${createHmac("sha256", secret).update("v0:").update(timestamp).update(":").update(body).digest("hex")}`;
 }
 
 function mentionEnvelope() {

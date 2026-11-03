@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
@@ -693,6 +694,69 @@ describe("dynamic provider runtime", () => {
     assert.deepEqual(used, ["disconnect:B1", "disconnect:B1"]);
   });
 
+  it("hands a Slack events request to the webhook app whose signing secret verifies it", async () => {
+    const handled: string[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) => {
+        const id = configurationId(configuration);
+        const transport = configuration.provider === "slack" ? configuration.transport : "";
+        return {
+          ...slackAppRegistration(id, []),
+          // As in production, only a webhook app takes requests.
+          requests:
+            transport === "webhook"
+              ? [
+                  {
+                    name: "slack.events",
+                    handle: async (request) => {
+                      handled.push(`${id}:${await request.text()}`);
+                      return new Response("OK");
+                    },
+                  },
+                ]
+              : [],
+        };
+      },
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    const events = stable.requests.find((request) => request.name === "slack.events")!;
+    const publish = async (configuration: SlackProviderApplicationConfiguration) => {
+      const candidate = await runtime.prepare(
+        "slack",
+        configuration,
+        "https://hub.test",
+        { provider: "slack", id: configuration.appId, name: configuration.appId },
+        1,
+      );
+      candidate.publish();
+    };
+    const signed = (secret: string, body: string) => {
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const digest = createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex");
+      return new Request("https://hub.test/api/integrations/slack/events", {
+        method: "POST",
+        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": `v0=${digest}` },
+        body,
+      });
+    };
+
+    await publish({ provider: "slack", transport: "socket", appId: "S1", appToken: "xapp-s1" });
+    // Socket Mode apps take no requests, so with only one running there is nothing to route to.
+    assert.equal((await events.handle(signed("signing-A1", "{}"))).status, 404);
+    await publish(webhookConfiguration("A1", "signing-A1"));
+    await publish(webhookConfiguration("B1", "signing-B1"));
+
+    assert.equal((await events.handle(signed("signing-B1", '{"for":"B1"}'))).status, 200);
+    assert.equal((await events.handle(signed("signing-A1", '{"for":"A1"}'))).status, 200);
+    assert.equal((await events.handle(signed("signing-S1", '{"for":"S1"}'))).status, 401);
+    assert.deepEqual(handled, ['B1:{"for":"B1"}', 'A1:{"for":"A1"}']);
+  });
+
   it("completes a callback with the app its attempt was started for", async () => {
     const built: string[] = [];
     const database = createMemoryDatabase();
@@ -1046,6 +1110,20 @@ function slackConfiguration(appId: string): SlackProviderApplicationConfiguratio
     clientId: "client",
     clientSecret: "secret",
     signingSecret: "signing",
+  };
+}
+
+function webhookConfiguration(
+  appId: string,
+  signingSecret: string,
+): SlackProviderApplicationConfiguration {
+  return {
+    provider: "slack",
+    transport: "webhook",
+    appId,
+    clientId: "client",
+    clientSecret: "secret",
+    signingSecret,
   };
 }
 
