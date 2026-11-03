@@ -13,6 +13,8 @@ import type {
   SlackProviderApplicationConfiguration,
 } from "../index.js";
 import { DynamicProviderRuntime } from "./runtime-owner.js";
+import { slackHealthReport } from "../../server/slack-health.js";
+import type { SlackIntakeHealth } from "../../triggers/slack/source/index.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
 
@@ -472,6 +474,13 @@ describe("dynamic provider runtime", () => {
       ["A1", "B1"],
     );
     assert.equal(runtime.identity("slack", "B1")?.id, "B1");
+    // Each app's delivery is that app's own: retrying B reaches B's registration only.
+    log.length = 0;
+    await runtime
+      .slackDeliveries()
+      .find((delivery) => delivery.applicationId === "B1")!
+      .retry();
+    assert.deepEqual(log, ["retry:B1@1"]);
 
     // A new version of A retires A's old registration only.
     log.length = 0;
@@ -486,6 +495,46 @@ describe("dynamic provider runtime", () => {
     log.length = 0;
     await stable.sources[0]!.stop();
     assert.deepEqual(log.toSorted(), ["stop:A1@2", "stop:B1@1"]);
+  });
+
+  it("reports every Slack app's intake, so either app going down shows in its health", async () => {
+    const down = new Set<string>();
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) => {
+        const id = configurationId(configuration);
+        const registration = slackAppRegistration(id, []);
+        return {
+          ...registration,
+          slackDelivery: {
+            ...registration.slackDelivery!,
+            intake: () => socketIntake(down.has(id) ? "reconnecting" : "connected"),
+          },
+        };
+      },
+    });
+    for (const appId of ["A1", "B1"]) {
+      const candidate = await runtime.prepare(
+        "slack",
+        slackConfiguration(appId),
+        "https://hub.test",
+        { provider: "slack", id: appId, name: appId },
+        1,
+      );
+      candidate.publish();
+    }
+    const health = () => slackHealthReport(runtime.slackIntakes(), new Date());
+
+    assert.equal(health().status, 200);
+    assert.equal(health().body.apps.length, 2);
+    for (const appId of ["A1", "B1"]) {
+      down.clear();
+      down.add(appId);
+      assert.equal(health().status, 503, appId);
+      assert.equal(health().body.reason, "socket_down", appId);
+    }
   });
 
   it("dispatches each Slack call to the app it belongs to", async () => {
@@ -1113,6 +1162,29 @@ function slackConfiguration(appId: string): SlackProviderApplicationConfiguratio
   };
 }
 
+/** A Socket Mode intake whose state has held for an hour, so "reconnecting" counts as down. */
+function socketIntake(state: "connected" | "reconnecting"): SlackIntakeHealth {
+  return {
+    transport: "socket",
+    state,
+    stateChangedAt: new Date(Date.now() - 3_600_000),
+    queuedFrames: 0,
+    activePhase: null,
+    activePhaseStartedAt: null,
+    lastCompletedAt: null,
+    acceptTimeouts: 0,
+    ackTimeouts: 0,
+    dispatchTimeouts: 0,
+    lastAcceptOkAt: null,
+    lastAcceptTimeoutAt: null,
+    abandonedHandlers: 0,
+    oldestAbandonedStartedAt: null,
+    closedConnectionFrames: 0,
+    oldestClosedFrameStartedAt: null,
+    lastPongAt: null,
+  };
+}
+
 function webhookConfiguration(
   appId: string,
   signingSecret: string,
@@ -1210,7 +1282,10 @@ function slackAppRegistration(id: string, log: string[]): ProviderRegistration {
     ],
     slackDelivery: {
       status: () => ({ state: "connected" }),
-      retry: () => Promise.resolve(),
+      retry: () => {
+        log.push(`retry:${id}`);
+        return Promise.resolve();
+      },
       intake: () => ({ transport: "webhook" }),
     },
   };

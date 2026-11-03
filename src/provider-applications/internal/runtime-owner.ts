@@ -137,6 +137,11 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     });
   }
 
+  /** Every published Slack app's intake health, in app order, for `/health/slack`. */
+  slackIntakes(): readonly SlackIntakeHealth[] {
+    return this.slackDeliveries().map((delivery) => delivery.intake());
+  }
+
   onSlackInstallation(
     handler: NonNullable<DynamicProviderRuntime["slackInstallationHandler"]>,
   ): void {

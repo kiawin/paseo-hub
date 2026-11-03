@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { SlackIntakeHealth } from "../triggers/slack/source/index.js";
-import { slackHealthReport } from "./slack-health.js";
+import { SLACK_SOCKET_DOWN_MS, slackHealthReport } from "./slack-health.js";
 
 const KEYS = [
   "ok",
@@ -52,9 +52,18 @@ function socket(overrides: Partial<Extract<SlackIntakeHealth, { transport: "sock
   } satisfies SlackIntakeHealth;
 }
 
+/** Judges one app, or none, and checks the report is that app's alone. */
 function judge(intake: SlackIntakeHealth | undefined) {
-  const report = slackHealthReport(intake, NOW);
-  assert.deepEqual(Object.keys(report.body).toSorted(), KEYS);
+  const report = judgeApps(intake === undefined ? [] : [intake]);
+  const { apps, ...shown } = report.body;
+  assert.deepEqual(apps, intake === undefined ? [] : [shown]);
+  return report;
+}
+
+function judgeApps(intakes: readonly SlackIntakeHealth[]) {
+  const report = slackHealthReport(intakes, NOW);
+  assert.deepEqual(Object.keys(report.body).toSorted(), [...KEYS, "apps"].toSorted());
+  for (const app of report.body.apps) assert.deepEqual(Object.keys(app).toSorted(), KEYS);
   assert.equal(report.body.ok, report.status === 200);
   if (report.status === 200) assert.equal(report.body.reason, null);
   const json = JSON.stringify(report.body);
@@ -76,8 +85,35 @@ function unhealthy(intake: SlackIntakeHealth, reason: string) {
 }
 
 describe("Slack intake health report", () => {
+  it("is healthy when every Slack app is", () => {
+    const report = judgeApps([socket(), { transport: "webhook" }]);
+    assert.equal(report.status, 200);
+    assert.deepEqual(
+      report.body.apps.map((app) => [app.ok, app.transport]),
+      [
+        [true, "socket"],
+        [true, "webhook"],
+      ],
+    );
+    assert.equal(report.body.transport, "socket");
+  });
+
+  it("reports the app whose socket is down while the other is healthy", () => {
+    const down = socket({ state: "reconnecting", stateChangedAt: ago(SLACK_SOCKET_DOWN_MS) });
+    const report = judgeApps([socket(), down]);
+
+    assert.equal(report.status, 503);
+    assert.equal(report.body.reason, "socket_down");
+    assert.equal(report.body.state, "reconnecting");
+    assert.deepEqual(
+      report.body.apps.map((app) => app.reason),
+      [null, "socket_down"],
+    );
+  });
+
   it("is healthy and all null when Slack is not configured", () => {
-    const body = healthy(undefined);
+    const { apps, ...body } = healthy(undefined);
+    assert.deepEqual(apps, []);
     assert.equal(body.transport, null);
     for (const [key, value] of Object.entries(body)) {
       if (key !== "ok" && key !== "reason") assert.equal(value, null, key);

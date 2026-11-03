@@ -159,7 +159,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       providerApplications,
       publicBaseUrl: identity.appUrl,
       completionTokenSecret: identity.authSecret,
-      slackIntakeHealth: () => providerRuntime.slackDeliveries()[0]?.intake(),
+      slackIntakeHealth: () => providerRuntime.slackIntakes(),
       close: () => resources.close(),
     });
     const activationFailures = await activateProviderApplicationsAtStartup({

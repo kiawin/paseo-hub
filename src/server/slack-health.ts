@@ -7,7 +7,8 @@ export const SLACK_SOCKET_DOWN_MS = 300_000;
 
 export type SlackHealthReason = "frame_stuck" | "accept_stalled" | "socket_down";
 
-export interface SlackHealthBody {
+/** One Slack app's intake, judged on its own. */
+export interface SlackAppHealthBody {
   ok: boolean;
   reason: SlackHealthReason | null;
   transport: SlackIntakeHealth["transport"] | null;
@@ -27,6 +28,15 @@ export interface SlackHealthBody {
   closedConnectionFrames: number | null;
   oldestClosedFrameAgeMs: number | null;
   lastPongAt: string | null;
+}
+
+/**
+ * The top-level fields are the first unhealthy app's, or the first app's while all are healthy, so
+ * a check written for one app reads the same. `apps` has every app in order. The endpoint is public,
+ * so nothing in it names an app or a workspace.
+ */
+export interface SlackHealthBody extends SlackAppHealthBody {
+  apps: SlackAppHealthBody[];
 }
 
 export interface SlackHealthReport {
@@ -54,45 +64,46 @@ const NOT_APPLICABLE = {
 } as const;
 
 /**
- * Judges Slack intake for `/health/slack`: 503 with a reason when intake has stopped, 200
- * otherwise. Slack not configured and the webhook transport are healthy: nothing here can stall.
+ * Judges Slack intake for `/health/slack`, one entry per running Slack app: 503 with a reason when
+ * any app's intake has stopped, 200 otherwise. No app, and the webhook transport, are healthy:
+ * nothing here can stall.
  */
 export function slackHealthReport(
-  intake: SlackIntakeHealth | undefined,
+  intakes: readonly SlackIntakeHealth[],
   now: Date,
 ): SlackHealthReport {
+  const apps = intakes.map((intake) => appHealth(intake, now));
+  const shown = apps.find((app) => !app.ok) ?? apps[0] ?? appHealth(undefined, now);
+  return { status: shown.ok ? 200 : 503, body: { ...shown, apps } };
+}
+
+function appHealth(intake: SlackIntakeHealth | undefined, now: Date): SlackAppHealthBody {
   if (intake === undefined || intake.transport === "webhook") {
-    return {
-      status: 200,
-      body: { ok: true, reason: null, transport: intake?.transport ?? null, ...NOT_APPLICABLE },
-    };
+    return { ok: true, reason: null, transport: intake?.transport ?? null, ...NOT_APPLICABLE };
   }
   const ageOf = (time: Date | null) => (time === null ? null : now.getTime() - time.getTime());
   const activePhaseAgeMs = ageOf(intake.activePhaseStartedAt);
   const reason = stallReason(intake, activePhaseAgeMs, now);
   return {
-    status: reason === null ? 200 : 503,
-    body: {
-      ok: reason === null,
-      reason,
-      transport: "socket",
-      state: intake.state,
-      stateChangedAt: intake.stateChangedAt.toISOString(),
-      queuedFrames: intake.queuedFrames,
-      activePhase: intake.activePhase,
-      activePhaseAgeMs,
-      lastCompletedAt: isoOf(intake.lastCompletedAt),
-      acceptTimeouts: intake.acceptTimeouts,
-      ackTimeouts: intake.ackTimeouts,
-      dispatchTimeouts: intake.dispatchTimeouts,
-      lastAcceptOkAt: isoOf(intake.lastAcceptOkAt),
-      lastAcceptTimeoutAt: isoOf(intake.lastAcceptTimeoutAt),
-      abandonedHandlers: intake.abandonedHandlers,
-      oldestAbandonedAgeMs: ageOf(intake.oldestAbandonedStartedAt),
-      closedConnectionFrames: intake.closedConnectionFrames,
-      oldestClosedFrameAgeMs: ageOf(intake.oldestClosedFrameStartedAt),
-      lastPongAt: isoOf(intake.lastPongAt),
-    },
+    ok: reason === null,
+    reason,
+    transport: "socket",
+    state: intake.state,
+    stateChangedAt: intake.stateChangedAt.toISOString(),
+    queuedFrames: intake.queuedFrames,
+    activePhase: intake.activePhase,
+    activePhaseAgeMs,
+    lastCompletedAt: isoOf(intake.lastCompletedAt),
+    acceptTimeouts: intake.acceptTimeouts,
+    ackTimeouts: intake.ackTimeouts,
+    dispatchTimeouts: intake.dispatchTimeouts,
+    lastAcceptOkAt: isoOf(intake.lastAcceptOkAt),
+    lastAcceptTimeoutAt: isoOf(intake.lastAcceptTimeoutAt),
+    abandonedHandlers: intake.abandonedHandlers,
+    oldestAbandonedAgeMs: ageOf(intake.oldestAbandonedStartedAt),
+    closedConnectionFrames: intake.closedConnectionFrames,
+    oldestClosedFrameAgeMs: ageOf(intake.oldestClosedFrameStartedAt),
+    lastPongAt: isoOf(intake.lastPongAt),
   };
 }
 
