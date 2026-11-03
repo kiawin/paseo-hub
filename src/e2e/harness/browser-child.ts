@@ -38,6 +38,7 @@ import {
   BrowserProviderApplicationVerifier,
   BrowserSlackSocketFixture,
   browserRegistrationFactory,
+  FIXTURE_APP_CREDENTIALS,
 } from "./browser-provider-applications.js";
 import {
   activateProviderApplicationsAtStartup,
@@ -737,7 +738,7 @@ async function acceptSlackSocketCommand(
       `select count(distinct receipt.id)::integer receipts, count(run.id)::integer runs
        from provider_event_receipts receipt left join trigger_runs run
        on run.provider_event_receipt_id = receipt.id where receipt.delivery_id = $1`,
-      [`slack-${message.eventId}`],
+      [`slack-${FIXTURE_APP_CREDENTIALS.slack.appId}-${message.eventId}`],
     );
     process.send?.({ id: message.id, ok: true, data: result.rows[0] });
   } catch (error) {
@@ -1211,8 +1212,9 @@ async function composeProviderApplications(input: {
     verifier,
     slackSocketVerifier: input.slackSocket.verifier(),
     slackDelivery: {
-      status: () => providerRuntime.slackDelivery()?.status() ?? { state: "stopped" },
-      retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
+      // Until the settings service picks an app, status and retry use the only Slack app.
+      status: () => providerRuntime.slackDeliveries()[0]?.status() ?? { state: "stopped" },
+      retry: () => providerRuntime.slackDeliveries()[0]?.retry() ?? Promise.resolve(),
     },
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),

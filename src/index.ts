@@ -139,8 +139,9 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       verifier: providerVerifier,
       slackSocketVerifier: createSlackSocketInstallationVerifier(),
       slackDelivery: {
-        status: () => providerRuntime.slackDelivery()?.status() ?? { state: "stopped" },
-        retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
+        // Until the settings service picks an app, status and retry use the only Slack app.
+        status: () => providerRuntime.slackDeliveries()[0]?.status() ?? { state: "stopped" },
+        retry: () => providerRuntime.slackDeliveries()[0]?.retry() ?? Promise.resolve(),
       },
       inventory: providerInventory,
       callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
@@ -162,7 +163,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       providerApplications,
       publicBaseUrl: identity.appUrl,
       completionTokenSecret: identity.authSecret,
-      slackIntakeHealth: () => providerRuntime.slackDelivery()?.intake(),
+      slackIntakeHealth: () => providerRuntime.slackDeliveries()[0]?.intake(),
       close: () => resources.close(),
     });
     const activationFailures = await activateProviderApplicationsAtStartup({

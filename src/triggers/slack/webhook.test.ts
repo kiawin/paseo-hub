@@ -84,7 +84,7 @@ describe("Slack webhook", () => {
         deliveryId,
         source: eventSource,
       })),
-      [{ deliveryId: "slack-Ev123", source: "slack.mention" }],
+      [{ deliveryId: "slack-A123-Ev123", source: "slack.mention" }],
     );
     assert.deepEqual(
       dispatched.map(({ connectionId, resourceId }) => ({ connectionId, resourceId })),
@@ -114,7 +114,7 @@ describe("Slack webhook", () => {
       return Promise.resolve({
         status: "duplicate",
         triggerIds: ["trigger-1"],
-        receiptId: "slack-Ev123",
+        receiptId: "slack-A123-Ev123",
       });
     });
     await endpoint.start(() => Promise.reject(new Error("must not dispatch duplicate")));
@@ -134,7 +134,7 @@ describe("Slack webhook", () => {
       organizationId: "org-1",
       projectId: "project-1",
       configurationRevisionId: "11111111-1111-4111-8111-111111111132",
-      deliveryId: "slack-Ev123",
+      deliveryId: "slack-A123-Ev123",
       source: "slack.mention",
       payload: {},
       receivedAt: new Date(NOW),
@@ -170,7 +170,7 @@ describe("Slack webhook", () => {
       accept: () =>
         Promise.resolve({
           status: "duplicate" as const,
-          receiptId: "slack-Ev123",
+          receiptId: "slack-A123-Ev123",
         }),
     });
     let dispatches = 0;

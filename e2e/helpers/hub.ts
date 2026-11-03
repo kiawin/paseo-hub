@@ -657,10 +657,12 @@ export class PaseoHub {
     await this.queryDatabase(
       this.primary,
       `insert into slack_connections
-         (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes, connected_by_user_id)
+         (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes,
+          connected_by_user_id, provider_application_id)
        values ($1, 'T-drop-reason', 'drop-reason-slack', 'Drop Reason Slack', 'UBOT',
                'PRIVATE-SLACK-TOKEN',
-               '["app_mentions:read","channels:history","chat:write","files:read","groups:history","reactions:write","users:read"]'::jsonb, $2)`,
+               '["app_mentions:read","channels:history","chat:write","files:read","groups:history","reactions:write","users:read"]'::jsonb, $2,
+               'browser-slack-app')`,
       [target.organization_id, target.user_id],
     );
     const daemonSlug = "browser-drop-reason";
@@ -708,7 +710,7 @@ export class PaseoHub {
       await this.queryDatabaseRows(
         this.primary,
         `select dropped_reason from provider_event_receipts
-           where delivery_id = 'slack-browser-unrouted-reason'`,
+           where delivery_id = 'slack-browser-slack-app-browser-unrouted-reason'`,
         [],
       ),
     );
@@ -2038,9 +2040,9 @@ export class PaseoHub {
       this.primary,
       `insert into slack_connections
          (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes,
-          connected_by_user_id)
+          connected_by_user_id, provider_application_id)
        select session.active_organization_id, $1, $2, $3, 'BROWSER_BOT', 'browser-token',
-              '["app_mentions:read","chat:write"]'::jsonb, "user".id
+              '["app_mentions:read","chat:write"]'::jsonb, "user".id, 'browser-slack-app'
        from session join "user" on "user".id = session.user_id
        where lower("user".email) = $4 and session.expires_at > now()`,
       [`browser-${randomUUID()}`, slug, teamName, this.requireUser(alias).accountEmail],

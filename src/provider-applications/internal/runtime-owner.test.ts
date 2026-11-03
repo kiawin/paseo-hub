@@ -166,7 +166,7 @@ describe("dynamic provider runtime", () => {
       "slack",
       slackConfiguration("A2"),
       "https://hub.test",
-      { provider: "slack", id: "A2", name: "A2" },
+      { provider: "slack", id: "A1", name: "A1" },
       2,
     );
     await second.start();
@@ -236,7 +236,7 @@ describe("dynamic provider runtime", () => {
       "slack",
       slackConfiguration("A2"),
       "https://hub.test",
-      { provider: "slack", id: "A2", name: "A2" },
+      { provider: "slack", id: "A1", name: "A1" },
       2,
     );
     await second.start();
@@ -428,6 +428,95 @@ describe("dynamic provider runtime", () => {
     assert.deepEqual(stopped, ["A1"]);
   });
 
+  it("runs several Slack apps side by side and replaces only the app that changes", async () => {
+    const log: string[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration, configurationVersion }) =>
+        slackAppRegistration(`${configurationId(configuration)}@${configurationVersion}`, log),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    const publish = async (appId: string, version: number) => {
+      const candidate = await runtime.prepare(
+        "slack",
+        slackConfiguration(appId),
+        "https://hub.test",
+        { provider: "slack", id: appId, name: appId },
+        version,
+      );
+      await candidate.start();
+      candidate.publish();
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    await publish("A1", 1);
+    stable.triggerProviders[0]!({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      connectionsForProject: () => {
+        throw new Error("unused");
+      },
+    });
+    // App B arrives after startup handed out trigger resources, and still gets them.
+    await publish("B1", 1);
+    assert.deepEqual(log, ["start:A1@1", "triggers:A1@1", "triggers:B1@1", "start:B1@1"]);
+    assert.deepEqual(
+      runtime.slackDeliveries().map((delivery) => delivery.applicationId),
+      ["A1", "B1"],
+    );
+    assert.equal(runtime.identity("slack", "B1")?.id, "B1");
+
+    // A new version of A retires A's old registration only.
+    log.length = 0;
+    await publish("A1", 2);
+    assert.deepEqual(log, ["triggers:A1@2", "start:A1@2", "stop:A1@1"]);
+    assert.deepEqual(
+      runtime.slackDeliveries().map((delivery) => delivery.applicationId),
+      ["A1", "B1"],
+    );
+
+    // Stopping the Slack source stops every app.
+    log.length = 0;
+    await stable.sources[0]!.stop();
+    assert.deepEqual(log.toSorted(), ["stop:A1@2", "stop:B1@1"]);
+  });
+
+  it("keeps one app for every other provider", async () => {
+    const stopped: string[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) =>
+        fakeRegistration(providerConfigurationId(configuration), [], stopped, []),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "github")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    for (const id of ["one", "two"]) {
+      const candidate = await runtime.prepare(
+        "github",
+        providerConfiguration("github", id),
+        "https://hub.test",
+        providerIdentity("github", id),
+        1,
+      );
+      await candidate.start();
+      candidate.publish();
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(stopped, ["one"]);
+    assert.equal(runtime.identity("github", providerIdentity("github", "one").id), undefined);
+    assert.equal(runtime.identity("github")?.id, providerIdentity("github", "two").id);
+  });
+
   it("leaves the active registration untouched when a candidate cannot start", async () => {
     const runtime = new DynamicProviderRuntime({
       database: createMemoryDatabase(),
@@ -459,7 +548,7 @@ describe("dynamic provider runtime", () => {
       "slack",
       slackConfiguration("A2"),
       "https://hub.test",
-      { provider: "slack", id: "A2", name: "A2" },
+      { provider: "slack", id: "A1", name: "A1" },
       2,
     );
 
@@ -627,7 +716,7 @@ describe("dynamic provider runtime", () => {
       "slack",
       slackConfiguration("two"),
       "https://hub.test",
-      { provider: "slack", id: "two", name: "Two" },
+      { provider: "slack", id: "one", name: "One" },
       2,
     );
     await second.start();
@@ -764,6 +853,37 @@ function fakeRegistration(
     ],
     outputs: [],
     requests: [],
+  };
+}
+
+/** A Slack app's registration that logs its sources and trigger factories by app and version. */
+function slackAppRegistration(id: string, log: string[]): ProviderRegistration {
+  const registration = fakeRegistration(id, [], [], []);
+  return {
+    ...registration,
+    triggerProviders: [
+      (resources) => {
+        log.push(`triggers:${id}`);
+        return registration.triggerProviders[0]!(resources);
+      },
+    ],
+    sources: [
+      {
+        start: () => {
+          log.push(`start:${id}`);
+          return Promise.resolve();
+        },
+        stop: () => {
+          log.push(`stop:${id}`);
+          return Promise.resolve();
+        },
+      },
+    ],
+    slackDelivery: {
+      status: () => ({ state: "connected" }),
+      retry: () => Promise.resolve(),
+      intake: () => ({ transport: "webhook" }),
+    },
   };
 }
 

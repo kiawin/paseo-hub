@@ -24,15 +24,25 @@ import { parseProviderApplicationConfiguration } from "./store.js";
 import type { SlackIntakeHealth, SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
 
-interface Slot {
-  active: ActiveRegistration | undefined;
-  identity: ProviderApplicationIdentity | undefined;
+/**
+ * One provider's runtime. Trigger resources and the source handler belong to the provider, so an app
+ * prepared after startup gets them. Slack runs one slot per app; every other provider runs one app,
+ * so publishing its app retires any other.
+ */
+interface ProviderState {
+  slots: Map<string, Slot>;
   triggerResources: TriggerProviderResources | undefined;
   handler: TriggerHandler | undefined;
 }
 
+interface Slot {
+  active: ActiveRegistration | undefined;
+  identity: ProviderApplicationIdentity | undefined;
+}
+
 interface ActiveRegistration {
   provider: Provider;
+  applicationId: string;
   registration: ProviderRegistration;
   triggers: readonly TriggerProvider[];
   sourcesStarted: boolean;
@@ -79,11 +89,11 @@ interface DynamicProviderRuntimeOptions {
 
 /** @package */
 export class DynamicProviderRuntime implements ProviderRuntimeOwner {
-  private readonly slots = new Map<Provider, Slot>([
-    ["github", emptySlot()],
-    ["slack", emptySlot()],
-    ["discord", emptySlot()],
-    ["linear", emptySlot()],
+  private readonly providers = new Map<Provider, ProviderState>([
+    ["github", emptyState()],
+    ["slack", emptyState()],
+    ["discord", emptyState()],
+    ["linear", emptyState()],
   ]);
   private readonly stable = new Map<Provider, ProviderRegistration>();
   private slackInstallationHandler: SlackInstallationHandler | undefined;
@@ -104,14 +114,24 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     ];
   }
 
-  identity(provider: Provider): ProviderApplicationIdentity | undefined {
-    return this.slot(provider).identity;
+  /** One app's identity; without an app id, the provider's first published app. */
+  identity(provider: Provider, applicationId?: string): ProviderApplicationIdentity | undefined {
+    const state = this.state(provider);
+    if (applicationId !== undefined) return state.slots.get(applicationId)?.identity;
+    return state.slots.values().next().value?.identity;
   }
 
-  slackDelivery():
-    | { status(): SlackDeliveryStatus; retry(): Promise<void>; intake(): SlackIntakeHealth }
-    | undefined {
-    return this.slot("slack").active?.registration.slackDelivery;
+  /** Socket Mode delivery of every published Slack app, one entry per app. */
+  slackDeliveries(): readonly {
+    applicationId: string;
+    status(): SlackDeliveryStatus;
+    retry(): Promise<void>;
+    intake(): SlackIntakeHealth;
+  }[] {
+    return [...this.state("slack").slots].flatMap(([applicationId, slot]) => {
+      const delivery = slot.active?.registration.slackDelivery;
+      return delivery === undefined ? [] : [{ applicationId, ...delivery }];
+    });
   }
 
   onSlackInstallation(
@@ -144,10 +164,11 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       configurationVersion,
       activation,
     );
-    const slot = this.slot(provider);
-    const triggerResources = slot.triggerResources;
+    const state = this.state(provider);
+    const triggerResources = state.triggerResources;
     const active: ActiveRegistration = {
       provider,
+      applicationId: identity.id,
       registration,
       triggers:
         triggerResources === undefined
@@ -164,8 +185,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     let published = false;
     return {
       start: async () => {
-        if (slot.handler === undefined) return;
-        await startSources(active, slot.handler);
+        if (state.handler === undefined) return;
+        await startSources(active, state.handler);
       },
       beginConnection: async (request) => {
         const response = await registration.connection.actions["start"]?.(request);
@@ -180,26 +201,36 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         return { url };
       },
       publish: () => {
-        const previous = slot.active;
-        if (previous !== undefined) previous.acceptingEvents = false;
-        slot.active = active;
-        slot.identity = identity;
+        // A new version replaces the same app; every provider but Slack runs only one app.
+        const replaced = [...state.slots].filter(
+          ([applicationId]) => applicationId === identity.id || provider !== "slack",
+        );
+        for (const [applicationId] of replaced) {
+          if (applicationId !== identity.id) state.slots.delete(applicationId);
+        }
+        state.slots.set(identity.id, { active, identity });
         active.acceptingEvents = true;
         published = true;
-        if (previous !== undefined) {
-          previous.retiring = true;
-          void stopSources(previous).catch((error: unknown) => {
-            reportFailure(error, {
-              operation: "provider_runtime.retire_inbound",
-              component: "provider_runtime",
-              provider,
-            });
-          });
-          void this.retireWhenDrained(provider, previous);
+        for (const [, previous] of replaced) {
+          if (previous.active === undefined) continue;
+          this.retireReplaced(previous.active);
         }
       },
       close: () => (published ? Promise.resolve() : stopSources(active)),
     };
+  }
+
+  private retireReplaced(previous: ActiveRegistration): void {
+    previous.acceptingEvents = false;
+    previous.retiring = true;
+    void stopSources(previous).catch((error: unknown) => {
+      reportFailure(error, {
+        operation: "provider_runtime.retire_inbound",
+        component: "provider_runtime",
+        provider: previous.provider,
+      });
+    });
+    void this.retireWhenDrained(previous);
   }
 
   private build(
@@ -308,25 +339,35 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   }
 
   private stableRegistration(provider: Provider): ProviderRegistration {
-    const slot = this.slot(provider);
+    const state = this.state(provider);
+    // Until calls are dispatched to the app they belong to, they go to the first published app.
+    const slot = {
+      get active() {
+        return state.slots.values().next().value?.active;
+      },
+    };
     const source: TriggerSource = {
       start: async (handler) => {
-        slot.handler = handler;
-        if (slot.active !== undefined) await startSources(slot.active, handler);
+        state.handler = handler;
+        for (const active of activeRegistrations(state)) await startSources(active, handler);
       },
       stop: async () => {
-        slot.handler = undefined;
-        if (slot.active !== undefined) {
-          slot.active.acceptingEvents = false;
-          await stopSources(slot.active);
-        }
+        state.handler = undefined;
+        const results = await Promise.allSettled(
+          activeRegistrations(state).map((active) => {
+            active.acceptingEvents = false;
+            return stopSources(active);
+          }),
+        );
+        const rejected = results.find((result) => result.status === "rejected");
+        if (rejected?.status === "rejected") throw rejected.reason;
       },
     };
     const connectionActions = Object.fromEntries(
       actionNames(provider).map((action) => [
         action,
         async (request: Request) => {
-          const active = await this.registrationForAction(provider, slot, action, request);
+          const active = await this.registrationForAction(provider, state, action, request);
           if (active === undefined) {
             return Response.json({ error: "provider_not_configured" }, { status: 409 });
           }
@@ -390,9 +431,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         : {}),
       triggerProviders: [
         (resources) => {
-          slot.triggerResources = resources;
-          if (slot.active !== undefined) {
-            slot.active.triggers = slot.active.registration.triggerProviders
+          state.triggerResources = resources;
+          for (const active of activeRegistrations(state)) {
+            active.triggers = active.registration.triggerProviders
               .map((factory) => factory(resources))
               .filter((trigger): trigger is TriggerProvider => trigger !== undefined);
           }
@@ -455,13 +496,16 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     };
   }
 
-  private slot(provider: Provider): Slot {
-    const slot = this.slots.get(provider);
-    if (slot === undefined) throw new Error(`unknown provider: ${provider}`);
-    return slot;
+  private state(provider: Provider): ProviderState {
+    const state = this.providers.get(provider);
+    if (state === undefined) throw new Error(`unknown provider: ${provider}`);
+    return state;
   }
 
-  private dynamicTrigger(provider: Provider, slot: Slot): TriggerProvider {
+  private dynamicTrigger(
+    provider: Provider,
+    slot: { readonly active: ActiveRegistration | undefined },
+  ): TriggerProvider {
     const current = () => {
       const active = slot.active;
       const trigger = active?.triggers[0];
@@ -538,39 +582,45 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     } finally {
       active.leases -= 1;
       if (active.retiring) {
-        void this.retireWhenDrained(active.provider, active);
+        void this.retireWhenDrained(active);
       }
     }
   }
 
-  private retireWhenDrained(provider: Provider, active: ActiveRegistration): Promise<void> {
+  private retireWhenDrained(active: ActiveRegistration): Promise<void> {
     if (active.leases > 0) return Promise.resolve();
-    active.retirement ??= retire(provider, active);
+    active.retirement ??= retire(active);
     return active.retirement;
   }
 
   private async registrationForAction(
     provider: Provider,
-    slot: Slot,
+    providerState: ProviderState,
     action: string,
     request: Request,
   ): Promise<ActiveRegistration | undefined> {
-    if (action !== "callback" && action !== "setup") return slot.active;
+    const first = providerState.slots.values().next().value?.active;
+    if (action !== "callback" && action !== "setup") return first;
     const state = new URL(request.url).searchParams.get("state");
-    if (state === null) return slot.active;
+    if (state === null) return first;
     const snapshot = await this.options.database.findConnectionAttemptConfiguration(
       createHash("sha256").update(state).digest("hex"),
     );
-    if (snapshot === undefined) return slot.active;
+    if (snapshot === undefined) return first;
+    // The callback belongs to the app its attempt was started for.
+    const current =
+      snapshot.providerApplicationId === null
+        ? first
+        : providerState.slots.get(snapshot.providerApplicationId)?.active;
     const existing =
-      slot.active?.registration.configurationSnapshot?.version === snapshot.configurationVersion &&
-      slot.active.registration.configurationSnapshot.callbackOrigin === snapshot.callbackOrigin
-        ? slot.active
+      current?.registration.configurationSnapshot?.version === snapshot.configurationVersion &&
+      current.registration.configurationSnapshot.callbackOrigin === snapshot.callbackOrigin
+        ? current
         : undefined;
     if (existing !== undefined) return existing;
     try {
       const configuration = parseProviderApplicationConfiguration(snapshot.configurationSnapshot);
-      if (configuration.provider !== provider) return slot.active;
+      if (configuration.provider !== provider) return first;
       const registration = this.build(
         provider,
         configuration,
@@ -583,6 +633,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       );
       const restored: ActiveRegistration = {
         provider,
+        applicationId: snapshot.providerApplicationId ?? "",
         registration,
         triggers: [],
         sourcesStarted: false,
@@ -598,18 +649,19 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         component: "provider_runtime",
         provider,
       });
-      return slot.active;
+      return first;
     }
   }
 }
 
-function emptySlot(): Slot {
-  return {
-    active: undefined,
-    identity: undefined,
-    triggerResources: undefined,
-    handler: undefined,
-  };
+function emptyState(): ProviderState {
+  return { slots: new Map(), triggerResources: undefined, handler: undefined };
+}
+
+function activeRegistrations(state: ProviderState): ActiveRegistration[] {
+  return [...state.slots.values()].flatMap((slot) =>
+    slot.active === undefined ? [] : [slot.active],
+  );
 }
 
 function actionNames(provider: Provider): readonly string[] {
@@ -662,13 +714,17 @@ async function stopSources(active: ActiveRegistration): Promise<void> {
   if (rejected?.status === "rejected") throw rejected.reason;
 }
 
-async function retire(provider: Provider, active: ActiveRegistration): Promise<void> {
+async function retire(active: ActiveRegistration): Promise<void> {
   try {
     await stopSources(active);
   } catch (error) {
     reportFailure(
       error,
-      { operation: "provider_runtime.retire", component: "provider_runtime", provider },
+      {
+        operation: "provider_runtime.retire",
+        component: "provider_runtime",
+        provider: active.provider,
+      },
       { logger, kind: "internal" },
     );
   }

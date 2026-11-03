@@ -141,7 +141,8 @@ export interface ProviderRuntimeOwner {
       activateConfiguration: boolean;
     },
   ): Promise<ProviderRuntimeCandidate>;
-  identity?(provider: Provider): ProviderApplicationIdentity | undefined;
+  /** One app's identity; without an app id, the provider's first published app. */
+  identity?(provider: Provider, applicationId?: string): ProviderApplicationIdentity | undefined;
   onSlackInstallation?(
     handler: (input: {
       configuration: unknown;
