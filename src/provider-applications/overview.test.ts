@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { Provider, ProviderApplicationOverview, ProviderApplicationView } from "./index.js";
-import { connectedProviderCount, sectionView } from "./overview.js";
+import { connectedProviderCount, headlineStatus, sectionViews } from "./overview.js";
 
 describe("provider application overview", () => {
   it("counts Slack once when either of its apps is connected", () => {
@@ -12,11 +12,24 @@ describe("provider application overview", () => {
     assert.equal(connectedProviderCount(overview([], 1)), 1);
   });
 
-  it("gives the Slack section its first app, or an unconfigured one before any is saved", () => {
-    const first = view("slack", 1);
-    assert.equal(sectionView(overview([first, view("slack", 0)]), "slack"), first);
-    assert.equal(sectionView(overview([]), "slack").status, "notConfigured");
-    assert.equal(sectionView(overview([]), "github").provider, "github");
+  it("heads a section of several apps with the one most in need of attention", () => {
+    const needsAction = { ...view("slack", 1), status: "actionNeeded" as const };
+    const verified = view("slack", 0);
+    const saved = { ...verified, status: "verified" as const };
+    assert.equal(headlineStatus([view("slack", 1), needsAction]), "actionNeeded");
+    assert.equal(headlineStatus([view("slack", 1), saved]), "verified");
+    assert.equal(headlineStatus([view("slack", 1)]), "connected");
+    assert.equal(headlineStatus([]), "notConfigured");
+  });
+
+  it("gives the Slack section every saved app, and every other section its one app", () => {
+    const apps = [view("slack", 1), view("slack", 0)];
+    assert.deepEqual(sectionViews(overview(apps), "slack"), apps);
+    assert.deepEqual(sectionViews(overview([]), "slack"), []);
+    assert.deepEqual(
+      sectionViews(overview([]), "github").map((entry) => entry.provider),
+      ["github"],
+    );
   });
 });
 

@@ -398,12 +398,15 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return {
       connection: {
         name: provider,
-        status: (connections) =>
-          aggregateStatus(
-            activeRegistrations(state).map((active) =>
-              active.registration.connection.status(connections),
-            ),
-          ),
+        status: (connections) => {
+          const actives = activeRegistrations(state);
+          const status = aggregateStatus(
+            actives.map((active) => active.registration.connection.status(connections)),
+          );
+          return provider === "slack" && isRecord(status)
+            ? { ...status, applications: connectableSlackApplications(actives) }
+            : status;
+        },
         actions: connectionActions,
       },
       ...(provider === "github"
@@ -768,6 +771,18 @@ function slackRegistration(
   if (actives.length === 1) return actives[0]!;
   throw unavailable(
     actives.length === 0 ? "provider_not_configured" : "slack_application_required",
+  );
+}
+
+/**
+ * The Slack apps a workspace can be connected to from a project: the webhook apps, which install
+ * through Slack's OAuth. A Socket Mode app is connected by the bot token saved with it.
+ */
+function connectableSlackApplications(actives: readonly ActiveRegistration[]): string[] {
+  return actives.flatMap((active) =>
+    active.configuration.provider === "slack" && active.configuration.transport === "webhook"
+      ? [active.applicationId]
+      : [],
   );
 }
 

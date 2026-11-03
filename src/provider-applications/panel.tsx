@@ -17,7 +17,7 @@ import { PROVIDER_GUIDES } from "./guides.js";
 import { providerApplicationsOverview } from "./functions.js";
 import { ProviderSection, ProviderSectionLoading } from "./provider-section.js";
 import type { Provider, ProviderApplicationSurface } from "./index.js";
-import { connectedProviderCount, sectionView } from "./overview.js";
+import { connectedProviderCount, sectionViews } from "./overview.js";
 
 const OVERVIEW_KEY = ["provider-applications"] as const;
 
@@ -78,7 +78,7 @@ function ProviderApplications({
         >
           <ProviderSection
             guide={guide}
-            view={sectionView(overview, guide.provider)}
+            views={sectionViews(overview, guide.provider)}
             callbackOrigin={overview.callbackOrigin}
             surface={surface}
             organizationId={organizationId}

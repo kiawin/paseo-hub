@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it } from "vitest";
 import { PROVIDER_GUIDES } from "./guides.js";
-import { ProviderSectionLoading } from "./provider-section.js";
+import type { ProviderApplicationView } from "./index.js";
+import { UNCONFIGURED_SLACK } from "./overview.js";
+import {
+  ProviderSectionLoading,
+  SlackApplications,
+  type ApplicationSlot,
+} from "./provider-section.js";
 
 function loadingMarkup(): string {
   return renderToStaticMarkup(
@@ -36,3 +43,70 @@ describe("provider application loading surface", () => {
     assert.doesNotMatch(markup, /App manifest/u);
   });
 });
+
+describe("Slack apps in the settings section", () => {
+  function slackMarkup(views: readonly ProviderApplicationView[]): {
+    markup: string;
+    rendered: (string | undefined)[];
+  } {
+    const rendered: (string | undefined)[] = [];
+    const renderApplication = (view: ProviderApplicationView, slot: ApplicationSlot) => {
+      rendered.push(slot.applicationId);
+      return <p>workflow for {view.identity?.id ?? "a new app"}</p>;
+    };
+    const markup = renderToStaticMarkup(
+      createElement(SlackApplications, {
+        guide: SLACK_GUIDE,
+        views,
+        returned: undefined,
+        renderApplication,
+      }),
+    );
+    return { markup, rendered };
+  }
+
+  it("shows each saved app on its own, named, with a way to add another", () => {
+    const { markup, rendered } = slackMarkup([slackApp("A1"), slackApp("B1")]);
+
+    assert.match(markup, /<h2[^>]*>App A1<\/h2>/u);
+    assert.match(markup, /<h2[^>]*>App B1<\/h2>/u);
+    // Each saved app's workflow is handed that app's id, which its save, connect and retry send.
+    assert.deepEqual(rendered, ["A1", "B1"]);
+    assert.match(markup, />Add Slack app<\/button>/u);
+  });
+
+  it("gives each app its own status, so a second app needing attention is not hidden", () => {
+    const { markup } = slackMarkup([slackApp("A1"), { ...slackApp("B1"), status: "actionNeeded" }]);
+
+    assert.match(markup, /App A1<\/h2>.*?Connected/su);
+    assert.match(markup, /App B1<\/h2>.*?Action needed/su);
+  });
+
+  it("starts the first app from the paste form, with nothing to add beside it", () => {
+    const { markup, rendered } = slackMarkup([]);
+
+    assert.deepEqual(rendered, [undefined]);
+    assert.match(markup, /workflow for a new app/u);
+    assert.doesNotMatch(markup, /Add Slack app/u);
+  });
+
+  it("offers no second app beside one set from the environment", () => {
+    const { markup } = slackMarkup([{ ...slackApp("A1"), managedByEnvironment: true }]);
+
+    assert.match(markup, /App A1/u);
+    assert.doesNotMatch(markup, /Add Slack app/u);
+  });
+});
+
+const SLACK_GUIDE = PROVIDER_GUIDES.find((guide) => guide.provider === "slack")!;
+
+function slackApp(id: string): ProviderApplicationView {
+  return {
+    ...UNCONFIGURED_SLACK,
+    status: "connected",
+    identity: { provider: "slack", id, name: id },
+    identifiers: { transport: "socket" },
+    replaceable: false,
+    configurationVersion: 1,
+  };
+}

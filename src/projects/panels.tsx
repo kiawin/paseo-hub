@@ -6,6 +6,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { useActiveAccount } from "../auth/active-account.js";
+import { ActionMenu } from "../components/app/action-menu.js";
 import { Card, CardSkeleton } from "../components/app/card.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { CodeBlock } from "../components/app/copy-field.js";
@@ -107,9 +108,9 @@ export function OrganizationConnectionsPanel() {
   );
   if (!status.ok) return status.element;
   const data = snapshot.data;
-  const connectProvider = (provider: ConnectionProviderName) => {
+  const connectProvider = (provider: ConnectionProviderName, applicationId?: string) => {
     connect.mutate(
-      { data: { ...scope, provider } },
+      { data: { ...scope, provider, ...(applicationId === undefined ? {} : { applicationId }) } },
       {
         onSuccess: (response) => {
           if (response.status === "ok") window.location.assign(response.data.url);
@@ -150,9 +151,26 @@ export function OrganizationConnectionsPanel() {
         </Button>
       );
     }
+    const label = `${connectionActionLabel(provider)} ${providerLabel(provider)}`;
+    // Hub runs Socket Mode apps beside webhook ones, so even a single installable Slack app is
+    // named: an unnamed start is refused whenever more than one Slack app is running.
+    const applications = provider === "slack" ? (status.data.slack.applications ?? []) : [];
+    if (applications.length > 0) {
+      return (
+        <ActionMenu
+          label={label}
+          disabled={busy}
+          items={applications.map((applicationId) => ({
+            id: applicationId,
+            label: `App ${applicationId}`,
+            onSelect: () => connectProvider(provider, applicationId),
+          }))}
+        />
+      );
+    }
     return (
       <Button disabled={busy} variant="outline" size="sm" onClick={() => connectProvider(provider)}>
-        {connectionActionLabel(provider)} {providerLabel(provider)}
+        {label}
       </Button>
     );
   };
@@ -702,7 +720,11 @@ function connectionRows(data: OrganizationSnapshot) {
       provider: "slack" as const,
       id: connection.id,
       name: connection.slug,
-      externalId: `workspace ${connection.teamId}`,
+      // Two Slack apps can share a workspace, so the app tells their connections apart.
+      externalId:
+        connection.providerApplicationId === null
+          ? `workspace ${connection.teamId}`
+          : `workspace ${connection.teamId} · app ${connection.providerApplicationId}`,
       status: connection.requiresReauthorization
         ? ("requiresReauthorization" as const)
         : ("connected" as const),

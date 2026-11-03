@@ -645,7 +645,11 @@ describe("dynamic provider runtime", () => {
   });
 
   it("reports one Slack status for every app, the one most in need of attention", async () => {
-    const statuses: Record<string, string> = { A1: "connected", B1: "requiresReauthorization" };
+    const statuses: Record<string, string> = {
+      A1: "connected",
+      B1: "requiresReauthorization",
+      S1: "connected",
+    };
     const runtime = new DynamicProviderRuntime({
       database: createMemoryDatabase(),
       auth: testAuth(),
@@ -665,18 +669,27 @@ describe("dynamic provider runtime", () => {
       .registrations()
       .find((registration) => registration.connection.name === "slack")!;
     const usage = { github: [], discord: [], slack: [], linear: [] };
-    assert.deepEqual(stable.connection.status(usage), { status: "notConfigured" });
-    for (const appId of ["A1", "B1"]) {
+    assert.deepEqual(stable.connection.status(usage), {
+      status: "notConfigured",
+      applications: [],
+    });
+    for (const appId of ["A1", "B1", "S1"]) {
       const candidate = await runtime.prepare(
         "slack",
-        slackConfiguration(appId),
+        appId === "S1"
+          ? { provider: "slack", transport: "socket", appId, appToken: "xapp-test" }
+          : slackConfiguration(appId),
         "https://hub.test",
         { provider: "slack", id: appId, name: appId },
         1,
       );
       candidate.publish();
     }
-    assert.deepEqual(stable.connection.status(usage), { status: "requiresReauthorization" });
+    // The webhook apps are the ones a project can install; the Socket Mode app is not offered.
+    assert.deepEqual(stable.connection.status(usage), {
+      status: "requiresReauthorization",
+      applications: ["A1", "B1"],
+    });
   });
 
   it("disconnects a Slack connection through the app it belongs to", async () => {
