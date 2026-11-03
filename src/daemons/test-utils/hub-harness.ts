@@ -1761,7 +1761,7 @@ export class HubHarness {
         ({ configurationStoreForProject, attachments }) =>
           createSlackTriggerProvider({
             configurationStoreForProject,
-            botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+            botUserIdForConnection: () => Promise.resolve("UBOT"),
             client: new HarnessSlackClient(),
             ...(attachments === undefined ? {} : { attachments }),
           }),

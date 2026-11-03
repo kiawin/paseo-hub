@@ -26,7 +26,7 @@ describe("Slack Phase 1 trigger provider", () => {
       const client = new RecordingSlackClient();
       const provider = createSlackTriggerProvider({
         configurationStoreForProject: () => store,
-        botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+        botUserIdForConnection: () => Promise.resolve("UBOT"),
         client,
         billingUrlForOrganization: async () => "https://hub.paseo.sh/o/acme/settings/billing",
       });
@@ -64,7 +64,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
 
@@ -86,7 +86,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const client = new RecordingSlackClient({ username: "operator" });
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
 
@@ -96,7 +96,7 @@ describe("Slack Phase 1 trigger provider", () => {
 
     const rejected = await createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient({ username: "someone-else" }),
     }).match(external(project.id, revision.id));
     assert.equal(rejected, "trigger_filters_rejected");
@@ -111,7 +111,7 @@ describe("Slack Phase 1 trigger provider", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
 
@@ -138,7 +138,7 @@ describe("Slack Phase 1 trigger provider", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
 
@@ -162,7 +162,7 @@ describe("Slack Phase 1 trigger provider", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
     const prompt = "Do the whole thing first <@UBOT>";
@@ -182,7 +182,7 @@ describe("Slack Phase 1 trigger provider", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
 
@@ -207,7 +207,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
     const match = (await provider.match(external(project.id, revision.id)))[0];
@@ -232,7 +232,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
     const match = (await provider.match(external(project.id, revision.id)))[0];
@@ -242,10 +242,10 @@ describe("Slack Phase 1 trigger provider", () => {
       status: "succeeded",
     });
     assert.deepEqual(client.reactions, [
-      "org-1:T1:remove:eyes",
-      "org-1:T1:add:hourglass_flowing_sand",
-      "org-1:T1:remove:hourglass_flowing_sand",
-      "org-1:T1:add:white_check_mark",
+      "org-1:connection-1:remove:eyes",
+      "org-1:connection-1:add:hourglass_flowing_sand",
+      "org-1:connection-1:remove:hourglass_flowing_sand",
+      "org-1:connection-1:add:white_check_mark",
     ]);
   });
 
@@ -260,7 +260,7 @@ describe("Slack Phase 1 trigger provider", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
     const match = (await provider.match(external(project.id, revision.id, { threadTs: null })))[0];
@@ -293,7 +293,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
     const match = (await provider.match(external(project.id, revision.id)))[0];
@@ -303,7 +303,7 @@ describe("Slack Phase 1 trigger provider", () => {
     assert.deepEqual(client.messages, [
       {
         organizationId: "org-1",
-        teamId: "T1",
+        connectionId: "connection-1",
         channelId: "C1",
         threadTs: "1700000000.000001",
         content: "Paseo agent failed: boom",
@@ -321,7 +321,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const reactionFailure = new RecordingSlackClient({ failAddReaction: "white_check_mark" });
     const reactionProvider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: reactionFailure,
     });
     const match = (await reactionProvider.match(external(project.id, revision.id)))[0];
@@ -333,14 +333,14 @@ describe("Slack Phase 1 trigger provider", () => {
       });
     }, /slack add reaction failed/u);
     assert.deepEqual(reactionFailure.reactions, [
-      "org-1:T1:remove:hourglass_flowing_sand",
-      "org-1:T1:add:white_check_mark",
+      "org-1:connection-1:remove:hourglass_flowing_sand",
+      "org-1:connection-1:add:white_check_mark",
     ]);
 
     const noticeFailure = new RecordingSlackClient({ failMessages: true });
     const noticeProvider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: noticeFailure,
     });
     await assert.rejects(async () => {
@@ -351,9 +351,9 @@ describe("Slack Phase 1 trigger provider", () => {
       );
     }, /slack message failed/u);
     assert.deepEqual(noticeFailure.reactions, [
-      "org-1:T1:remove:eyes",
-      "org-1:T1:remove:hourglass_flowing_sand",
-      "org-1:T1:add:x",
+      "org-1:connection-1:remove:eyes",
+      "org-1:connection-1:remove:hourglass_flowing_sand",
+      "org-1:connection-1:add:x",
     ]);
   });
 
@@ -377,7 +377,7 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
 
@@ -464,7 +464,7 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
       attachments,
     });
@@ -556,7 +556,7 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
       attachments,
     });
@@ -615,12 +615,12 @@ describe("Slack Phase 1 trigger provider", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient({ failThreadRead: true }),
     });
     const emptyProvider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
     const emptyMatch = (await emptyProvider.match(external(project.id, revision.id)))[0];
@@ -693,7 +693,7 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
     const match = (await provider.match(external(project.id, revision.id)))[0];
@@ -720,7 +720,7 @@ describe("Slack Phase 1 trigger provider", () => {
       { organizationId: "org-1" },
     );
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: () => {
         requests += 1;
         if (requests > maximumPageCount) {
@@ -745,7 +745,7 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
     const match = (
@@ -778,13 +778,13 @@ describe("Slack Phase 1 trigger provider", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
     const match = (
       await provider.match({
         ...external(project.id, revision.id),
-        connectionId: null,
+        connectionId: "22222222-2222-4222-8222-222222222222",
         payload: {
           ...external(project.id, revision.id).payload,
           attachments: [
@@ -804,6 +804,127 @@ describe("Slack Phase 1 trigger provider", () => {
     ]);
   });
 
+  it("acts as app B's bot when two apps share a workspace", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      usernameConfiguration(),
+      { organizationId: "org-1" },
+    );
+    const client = new RecordingSlackClient({ username: "operator" });
+    const botUsers: string[] = [];
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForConnection: (_organizationId, connectionId) => {
+        botUsers.push(connectionId);
+        return Promise.resolve(connectionId === "connection-b" ? "UBOT" : "UBOT-A");
+      },
+      client,
+    });
+    const base = external(project.id, revision.id);
+
+    const match = (
+      await provider.match({
+        ...base,
+        connectionId: "connection-b",
+        payload: { ...base.payload, appId: "B1" },
+      })
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.outputContext.connectionId, "connection-b");
+    await provider.materializeContext!({
+      executionId: "execution-slack-app-b",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: match.triggerContext,
+    });
+    await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
+    await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
+
+    assert.deepEqual(botUsers, ["connection-b"]);
+    assert.deepEqual(client.connections, ["lookup:connection-b", "thread:connection-b"]);
+    assert.ok(client.reactions.length > 0);
+    assert.ok(client.reactions.every((reaction) => reaction.startsWith("org-1:connection-b:")));
+    assert.deepEqual(
+      client.messages.map((message) => message.connectionId),
+      ["connection-b"],
+    );
+  });
+
+  it("keeps a separate conversation per app in the same thread", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+    const conversationOf = async (appId: string, connectionId: string) => {
+      const base = external(project.id, revision.id);
+      const match = (
+        await provider.match({ ...base, connectionId, payload: { ...base.payload, appId } })
+      )[0];
+      if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+      return match.conversation?.key;
+    };
+
+    const first = await conversationOf("A1", "connection-a");
+    assert.equal(first, JSON.stringify(["slack", "A1", "T1", "C1", "1700000000.000001"]));
+    assert.notEqual(await conversationOf("B1", "connection-b"), first);
+    assert.equal(await conversationOf("A1", "connection-a"), first);
+  });
+
+  it("reacts and notifies through the accepted connection when an older context names none", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const client = new RecordingSlackClient();
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
+      client,
+    });
+    const match = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    const { connectionId: _recorded, ...older } = match.triggerContext.target;
+    const context = { ...match.triggerContext, target: older };
+
+    await provider.onAgentExecutionFailed?.(context, older, "boom");
+
+    assert.ok(client.reactions.every((reaction) => reaction.startsWith("org-1:connection-1:")));
+    assert.deepEqual(
+      client.messages.map((message) => message.connectionId),
+      ["connection-1"],
+    );
+  });
+
+  it("matches nothing for an event accepted without a connection", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForConnection: () => Promise.reject(new Error("no connection to look up")),
+      client: new RecordingSlackClient(),
+    });
+
+    assert.equal(
+      await provider.match({ ...external(project.id, revision.id), connectionId: null }),
+      "configuration_unavailable",
+    );
+  });
+
   it("does not hydrate an unrouted Slack thread", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
@@ -816,7 +937,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
       client,
     });
     const matches = await provider.match(external(project.id, revision.id, { authorId: "U2" }));
@@ -929,6 +1050,7 @@ function external(
     organizationId: "org-1",
     projectId,
     configurationRevisionId,
+    connectionId: "connection-1",
     source: "slack.mention",
     deliveryId: "slack-delivery-1",
     receivedAt: new Date(),
@@ -954,13 +1076,15 @@ class RecordingSlackClient implements SlackBotClient {
   reactions: string[] = [];
   messages: Array<{
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     channelId: string;
     threadTs: string;
     content: string;
   }> = [];
   threadReads: string[] = [];
   userLookups: string[] = [];
+  /** The connection each thread read and user lookup went through. */
+  connections: string[] = [];
   private readonly threadMessages: SlackThreadMessage[];
 
   constructor(
@@ -983,29 +1107,39 @@ class RecordingSlackClient implements SlackBotClient {
     return Promise.resolve();
   }
 
-  addReaction(input: { organizationId: string; teamId: string; name: string }): Promise<void> {
-    this.reactions.push(`${input.organizationId}:${input.teamId}:add:${input.name}`);
+  addReaction(input: {
+    organizationId: string;
+    connectionId: string;
+    name: string;
+  }): Promise<void> {
+    this.reactions.push(`${input.organizationId}:${input.connectionId}:add:${input.name}`);
     if (this.options.failAddReaction === input.name)
       return Promise.reject(new Error("slack add reaction failed"));
     return Promise.resolve();
   }
 
-  removeReaction(input: { organizationId: string; teamId: string; name: string }): Promise<void> {
-    this.reactions.push(`${input.organizationId}:${input.teamId}:remove:${input.name}`);
+  removeReaction(input: {
+    organizationId: string;
+    connectionId: string;
+    name: string;
+  }): Promise<void> {
+    this.reactions.push(`${input.organizationId}:${input.connectionId}:remove:${input.name}`);
     return Promise.resolve();
   }
-  lookupUserName(input: { userId: string }): Promise<string | undefined> {
+  lookupUserName(input: { connectionId: string; userId: string }): Promise<string | undefined> {
     this.userLookups.push(input.userId);
+    this.connections.push(`lookup:${input.connectionId}`);
     return Promise.resolve(this.options.username);
   }
   readThreadMessages(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     channelId: string;
     threadTs: string;
     beforeTs: string;
   }): Promise<SlackThreadReadResult> {
     this.threadReads.push(input.threadTs);
+    this.connections.push(`thread:${input.connectionId}`);
     if (this.options.failThreadRead === true) {
       return Promise.reject(new Error("thread history unavailable"));
     }

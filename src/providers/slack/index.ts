@@ -135,15 +135,8 @@ export function createSlackRegistration(
   const bot =
     options.botClient ??
     createSlackBotClient({
-      tokenForWorkspace: async (organizationId, teamId) =>
-        (
-          await findSlackBindingForOrganization(
-            database,
-            configuration.appId,
-            organizationId,
-            teamId,
-          )
-        )?.botAccessToken,
+      tokenForConnection: async (organizationId, connectionId) =>
+        (await findUsableSlackConnection(database, organizationId, connectionId))?.botAccessToken,
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     });
   const connection =
@@ -177,15 +170,8 @@ export function createSlackRegistration(
           billingUrlForOrganization: (organizationId) =>
             organizationBillingUrl(database, options.publicBaseUrl!, organizationId),
           ...(attachments === undefined ? {} : { attachments }),
-          botUserIdForWorkspace: async (organizationId, teamId) =>
-            (
-              await findSlackBindingForOrganization(
-                database,
-                configuration.appId,
-                organizationId,
-                teamId,
-              )
-            )?.botUserId,
+          botUserIdForConnection: async (organizationId, connectionId) =>
+            (await findUsableSlackConnection(database, organizationId, connectionId))?.botUserId,
           client: bot,
         }),
     ],
@@ -195,7 +181,18 @@ export function createSlackRegistration(
         type: "slack.reply",
         tool: replyOutputTool,
         available: outputContextProvider("slack"),
-        execute: createSlackReplyExecutor({ client: bot }),
+        execute: createSlackReplyExecutor({
+          client: bot,
+          connectionForWorkspace: async (organizationId, teamId) =>
+            (
+              await findSlackBindingForOrganization(
+                database,
+                configuration.appId,
+                organizationId,
+                teamId,
+              )
+            )?.id,
+        }),
       },
     ],
     requests:
@@ -213,6 +210,18 @@ function slackSocketOptions(
   options: Pick<CreateSlackRegistrationOptions, "socket">,
 ): Pick<Parameters<typeof createSlackEventSource>[0], "socket"> {
   return options.socket === undefined ? {} : { socket: options.socket };
+}
+
+/** One connection of the organization, usable only while it still has the scopes Hub needs. */
+async function findUsableSlackConnection(
+  database: Database,
+  organizationId: string,
+  connectionId: string,
+): Promise<SlackConnectionRecord | undefined> {
+  const connection = await database.findSlackConnectionById(organizationId, connectionId);
+  return connection !== undefined && hasRequiredSlackScopes(connection.scopes)
+    ? connection
+    : undefined;
 }
 
 /** This registration's app's connection to the workspace; another app may share the workspace. */

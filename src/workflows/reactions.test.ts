@@ -171,7 +171,7 @@ function createSlackReactionFixture() {
   const provider = createSlackTriggerProvider({
     configurationStoreForProject: () =>
       new ProjectConfigurationStore(createMemoryDatabase(), "unused"),
-    botUserIdForWorkspace: async () => "bot-1",
+    botUserIdForConnection: async () => "bot-1",
     client,
   });
   return {
@@ -181,6 +181,7 @@ function createSlackReactionFixture() {
       target: {
         provider: "slack",
         organizationId: "org-reactions",
+        connectionId: "connection-1",
         teamId: "team-1",
         channelId: "channel-1",
         threadTs: "1700000000.000001",
@@ -191,6 +192,7 @@ function createSlackReactionFixture() {
     outputContext: {
       provider: "slack",
       organizationId: "org-reactions",
+      connectionId: "connection-1",
       teamId: "team-1",
       channelId: "channel-1",
       threadTs: "1700000000.000001",
