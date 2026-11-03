@@ -625,8 +625,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
 
   /**
    * The registration that starts or disconnects a connection. A Slack start names its app, or uses
-   * the only one. A disconnect goes to the connection's own app, whose client revokes its token; a
-   * Socket Mode app has no client to do that.
+   * the only one. A disconnect always goes to the connection's own app, whose client revokes its
+   * token; a Socket Mode app has no client to do that, so an `applicationId` in the URL is ignored.
    */
   private async connectionActionRegistration(
     provider: Provider,
@@ -636,8 +636,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   ): Promise<ActiveRegistration | undefined> {
     const first = state.slots.values().next().value?.active;
     if (provider !== "slack") return first;
-    const named = url.searchParams.get("applicationId") ?? undefined;
-    if (action !== "disconnect" || named !== undefined) return slackRegistration(state, named);
+    if (action !== "disconnect") {
+      return slackRegistration(state, url.searchParams.get("applicationId") ?? undefined);
+    }
     const connectionId = url.searchParams.get("connectionId");
     const owner =
       connectionId === null || !UUID.test(connectionId)

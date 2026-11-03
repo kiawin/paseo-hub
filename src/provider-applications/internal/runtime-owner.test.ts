@@ -673,12 +673,15 @@ describe("dynamic provider runtime", () => {
       candidate.publish();
     }
 
-    const disconnect = (id: string) =>
+    const disconnect = (id: string, query = "") =>
       stable.connection.actions["disconnect"]!(
-        new Request(`https://hub.test/disconnect?connectionId=${id}`, { method: "POST" }),
+        new Request(`https://hub.test/disconnect?connectionId=${id}${query}`, { method: "POST" }),
       );
     await disconnect(connectionId);
     assert.deepEqual(used, ["disconnect:B1"]);
+    // Naming another app changes nothing: only the connection's own app can revoke its token.
+    await disconnect(connectionId, "&applicationId=A1");
+    assert.deepEqual(used, ["disconnect:B1", "disconnect:B1"]);
 
     // A connection whose app is not running is refused rather than handed to another app.
     const orphan = await disconnect(orphanConnectionId);
@@ -687,7 +690,7 @@ describe("dynamic provider runtime", () => {
     // A connection from before apps were recorded needs the only app, and two are running.
     const legacy = await disconnect(legacyConnectionId);
     assert.deepEqual(await legacy.json(), { error: "slack_application_required" });
-    assert.deepEqual(used, ["disconnect:B1"]);
+    assert.deepEqual(used, ["disconnect:B1", "disconnect:B1"]);
   });
 
   it("completes a callback with the app its attempt was started for", async () => {
