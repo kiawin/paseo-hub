@@ -3,8 +3,11 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { ExternalLink } from "lucide-react";
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -32,8 +35,10 @@ import { cn } from "../lib/utils.js";
 import {
   guideFields,
   guideGroups,
+  DEFAULT_SLACK_APP_NAME,
   guideUrl,
   isSecureOrigin,
+  SLACK_APP_NAME_HINT,
   SLACK_WEBHOOK_GUIDE,
   slackManifest,
   statusPresentation,
@@ -283,6 +288,9 @@ function ApplicationWorkflow({
   const replace = useRef<HTMLButtonElement>(null);
   const fields = guideFields(activeGuide, callbackOrigin);
   const scope = applicationId === undefined ? guide.provider : `${guide.provider}-${applicationId}`;
+  // The name outlives the manifest step, which remounts when the operator switches transport.
+  const [appName, setAppName] = useState(DEFAULT_SLACK_APP_NAME);
+  const manifestName = useMemo(() => ({ name: appName, setName: setAppName }), [appName]);
   const app = useMemo(
     () => (applicationId === undefined ? {} : { applicationId }),
     [applicationId],
@@ -441,47 +449,49 @@ function ApplicationWorkflow({
     ) : null;
 
   return (
-    <div className="grid gap-5">
-      {view.managedByEnvironment ? <EnvironmentNotice guide={activeGuide} /> : null}
-      {/* One node for the whole life of the section. A save moves the section from setup to
-          saved, and focus that had just landed on a node the phase change unmounts is focus
-          dropped on the floor. */}
-      <ResultRegion
-        ref={result}
-        guide={activeGuide}
-        // Several Slack apps each have a region; the app tells them apart, and the name still
-        // starts with the provider's so a single app reads as before.
-        label={
-          statusLabel ??
-          (applicationId === undefined
-            ? `${guide.name} status`
-            : `${guide.name} status for app ${applicationId}`)
-        }
-        outcome={outcome}
-      />
-      {guide.provider === "slack" &&
-      (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
-        <SlackTransportChoice value={slackTransport} onChange={setSlackTransport} />
-      ) : null}
-      <SectionBody
-        scope={scope}
-        guide={activeGuide}
-        view={view}
-        origin={callbackOrigin}
-        phase={phase}
-        form={form}
-        busy={busy}
-        connecting={connect.isPending || leaving}
-        replaceRef={replace}
-        onConnect={startConnection}
-        onRetry={() => retryDelivery.mutate({ data: app })}
-        onReplace={() => {
-          setErrors({});
-          setOutcome(undefined);
-          setReplacing(true);
-        }}
-      />
-    </div>
+    <ManifestNameContext value={manifestName}>
+      <div className="grid gap-5">
+        {view.managedByEnvironment ? <EnvironmentNotice guide={activeGuide} /> : null}
+        {/* One node for the whole life of the section. A save moves the section from setup to
+            saved, and focus that had just landed on a node the phase change unmounts is focus
+            dropped on the floor. */}
+        <ResultRegion
+          ref={result}
+          guide={activeGuide}
+          // Several Slack apps each have a region; the app tells them apart, and the name still
+          // starts with the provider's so a single app reads as before.
+          label={
+            statusLabel ??
+            (applicationId === undefined
+              ? `${guide.name} status`
+              : `${guide.name} status for app ${applicationId}`)
+          }
+          outcome={outcome}
+        />
+        {guide.provider === "slack" &&
+        (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
+          <SlackTransportChoice value={slackTransport} onChange={setSlackTransport} />
+        ) : null}
+        <SectionBody
+          scope={scope}
+          guide={activeGuide}
+          view={view}
+          origin={callbackOrigin}
+          phase={phase}
+          form={form}
+          busy={busy}
+          connecting={connect.isPending || leaving}
+          replaceRef={replace}
+          onConnect={startConnection}
+          onRetry={() => retryDelivery.mutate({ data: app })}
+          onReplace={() => {
+            setErrors({});
+            setOutcome(undefined);
+            setReplacing(true);
+          }}
+        />
+      </div>
+    </ManifestNameContext>
   );
 }
 
@@ -1059,15 +1069,53 @@ function StepBody({
             <CopyField key={url.key} label={url.label} value={guideUrl(origin, url.path)} />
           ))}
           {step.manifest === true ? (
-            <CopyBlock
-              label="App manifest"
-              value={slackManifest(origin, guide.transport ?? "socket")}
-              action="Copy manifest"
-            />
+            <ManifestBlock origin={origin} transport={guide.transport ?? "socket"} />
           ) : null}
         </div>
       ) : null}
     </>
+  );
+}
+
+/** The manifest to paste, named by the operator so a second Slack app is mentioned by its own name. */
+interface ManifestName {
+  name: string;
+  setName: (name: string) => void;
+}
+
+/** The Slack app name a workflow's manifest is built with; held by the workflow, not the step. */
+export const ManifestNameContext = createContext<ManifestName | undefined>(undefined);
+
+/** The manifest to paste, named by the operator so a second Slack app is mentioned by its own name. */
+export function ManifestBlock({
+  origin,
+  transport,
+}: {
+  origin: string;
+  transport: "socket" | "webhook";
+}) {
+  const id = useId();
+  const held = useContext(ManifestNameContext);
+  const [own, setOwn] = useState(DEFAULT_SLACK_APP_NAME);
+  const name = held?.name ?? own;
+  const setName = held?.setName ?? setOwn;
+  return (
+    <div className="grid gap-3">
+      <FormField
+        id={`${id}-name`}
+        name="slackAppName"
+        label="App name"
+        kind="text"
+        description={SLACK_APP_NAME_HINT}
+        value={name}
+        onChange={setName}
+      />
+      <CopyBlock
+        label="App manifest"
+        value={slackManifest(origin, transport, name)}
+        action="Copy manifest"
+      />
+    </div>
   );
 }
 

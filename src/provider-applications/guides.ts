@@ -705,12 +705,24 @@ export function guideUrl(origin: string, path: string): string {
   return path === "" ? origin : `${origin}${path}`;
 }
 
+/** The name a Slack app is created with when the operator gives none. */
+export const DEFAULT_SLACK_APP_NAME = "Paseo";
+
+/** How the manifest's name field explains itself: each Slack app is its own app, added on its own. */
+export const SLACK_APP_NAME_HINT =
+  "The name people mention, as in @Paseo. Hub can run several Slack apps side by side: each is created in Slack from its own manifest and added here on its own.";
+
 /**
  * The manifest Slack reads. Scopes come from the same constant the running Slack integration
  * checks installations against, so a manifest the operator pastes can never ask for less than
- * Hub needs.
+ * Hub needs. The name is both the app's and its bot's, so a second app is mentioned by its own.
  */
-export function slackManifest(origin: string, transport: "socket" | "webhook" = "socket"): string {
+export function slackManifest(
+  origin: string,
+  transport: "socket" | "webhook" = "socket",
+  name: string = DEFAULT_SLACK_APP_NAME,
+): string {
+  const displayName = yamlScalar(name.trim() === "" ? DEFAULT_SLACK_APP_NAME : name.trim());
   const scopes = SLACK_REQUIRED_BOT_SCOPES.map((scope) => `      - ${scope}`).join("\n");
   const webhook =
     transport === "webhook"
@@ -719,10 +731,10 @@ export function slackManifest(origin: string, transport: "socket" | "webhook" = 
   const requestUrl =
     transport === "webhook" ? `    request_url: ${origin}/api/integrations/slack/events\n` : "";
   return `display_information:
-  name: Paseo
+  name: ${displayName}
 features:
   bot_user:
-    display_name: Paseo
+    display_name: ${displayName}
     always_online: false
 oauth_config:
 ${webhook}  scopes:
@@ -738,6 +750,19 @@ ${requestUrl}    bot_events:
   socket_mode_enabled: ${transport === "socket" ? "true" : "false"}
   token_rotation_enabled: false
 `;
+}
+
+/** Words YAML reads as a boolean or null rather than as a name. */
+const YAML_KEYWORDS = new Set(["true", "false", "yes", "no", "on", "off", "y", "n", "null", "~"]);
+
+/**
+ * A plain name stays plain; anything YAML could read as something other than that string is
+ * quoted: syntax, a keyword, or a value starting with a digit (a number or a date).
+ */
+function yamlScalar(value: string): string {
+  const plain =
+    /^[A-Za-z][A-Za-z0-9 ._-]*$/u.test(value) && !YAML_KEYWORDS.has(value.toLowerCase());
+  return plain ? value : JSON.stringify(value);
 }
 
 const STATUS_LABELS: Record<ProviderApplicationStatus, { label: string; tone: Tone }> = {

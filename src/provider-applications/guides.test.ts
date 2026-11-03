@@ -11,6 +11,7 @@ import {
   guideUrl,
   identityLabel,
   isSecureOrigin,
+  SLACK_APP_NAME_HINT,
   slackManifest,
   SLACK_WEBHOOK_GUIDE,
   statusPresentation,
@@ -48,6 +49,37 @@ test("the Slack manifest asks for exactly the scopes Hub checks installations ag
     })
     .parse(load(slackManifest(LOCAL, "socket")));
   assert.deepEqual(socket.oauth_config.scopes.bot, [...SLACK_REQUIRED_BOT_SCOPES]);
+});
+
+test("a Slack app's manifest carries the name people will mention it by", () => {
+  const named = z.object({
+    display_information: z.object({ name: z.string() }),
+    features: z.object({ bot_user: z.object({ display_name: z.string() }) }),
+  });
+  for (const transport of ["socket", "webhook"] as const) {
+    const askMoe = named.parse(load(slackManifest(ORIGIN, transport, "AskMoe")));
+    assert.equal(askMoe.display_information.name, "AskMoe");
+    assert.equal(askMoe.features.bot_user.display_name, "AskMoe");
+  }
+  // A name YAML would read as syntax still arrives as written.
+  const odd = named.parse(load(slackManifest(ORIGIN, "socket", "Moe: the #1 bot")));
+  assert.equal(odd.display_information.name, "Moe: the #1 bot");
+  assert.equal(odd.features.bot_user.display_name, "Moe: the #1 bot");
+  // Names YAML would read as a boolean, null, a number or a date are still names.
+  for (const word of ["true", "No", "off", "null", "42", "1.5", "2026-11-03"]) {
+    assert.equal(
+      named.parse(load(slackManifest(ORIGIN, "socket", word))).display_information.name,
+      word,
+    );
+  }
+  // No name, or only spaces, is the default app.
+  assert.equal(slackManifest(ORIGIN, "socket", "  "), slackManifest(ORIGIN, "socket"));
+  assert.equal(named.parse(load(slackManifest(ORIGIN))).display_information.name, "Paseo");
+});
+
+test("the Slack setup says each app is created and added on its own", () => {
+  assert.match(SLACK_APP_NAME_HINT, /several Slack apps/u);
+  assert.match(SLACK_APP_NAME_HINT, /each is created in Slack from its own manifest/u);
 });
 
 test("generated URLs are built from the resolved callback origin", () => {
@@ -362,6 +394,7 @@ test("no guide leaks Paseo's internal vocabulary into operator-facing copy", () 
       guide.saveHint ?? "",
       guide.verifiedMessage ?? "",
       guide.httpsRequirement(LOCAL),
+      SLACK_APP_NAME_HINT,
     );
     for (const origin of [ORIGIN, LOCAL]) {
       for (const group of guideGroups(guide, origin)) {

@@ -6,10 +6,13 @@ import { PROVIDER_GUIDES } from "./guides.js";
 import type { ProviderApplicationView } from "./index.js";
 import { UNCONFIGURED_SLACK } from "./overview.js";
 import {
+  ManifestBlock,
+  ManifestNameContext,
   ProviderSectionLoading,
   SlackApplications,
   type ApplicationSlot,
 } from "./provider-section.js";
+import { SLACK_APP_NAME_HINT } from "./guides.js";
 
 function loadingMarkup(): string {
   return renderToStaticMarkup(
@@ -95,6 +98,26 @@ describe("Slack apps in the settings section", () => {
 
     assert.match(markup, /App A1/u);
     assert.doesNotMatch(markup, /Add Slack app/u);
+  });
+});
+
+const HELD_NAME = { name: "AskMoe", setName: () => {} };
+
+describe("Slack manifest step", () => {
+  it("builds the manifest from the name in its field, and says why the name matters", () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        ManifestNameContext,
+        { value: HELD_NAME },
+        createElement(ManifestBlock, { origin: "https://hub.test", transport: "socket" }),
+      ),
+    );
+
+    assert.match(markup, /value="AskMoe"/u);
+    assert.ok(markup.includes(SLACK_APP_NAME_HINT), "the field lost its explanation");
+    assert.match(markup, /name: AskMoe/u);
+    assert.match(markup, /display_name: AskMoe/u);
+    assert.doesNotMatch(markup, /name: Paseo/u);
   });
 });
 
