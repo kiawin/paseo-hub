@@ -216,6 +216,8 @@ describe("Slack Phase 1 trigger provider", () => {
     assert.equal(match.configurationRevisionId, revision.id);
     assert.equal(match.outputContext.threadTs, "1700000000.000001");
     assert.equal(match.outputContext.messageTs, "1700000000.000001");
+    // The app that received the event answers it.
+    assert.equal(match.outputContext.applicationId, "A1");
   });
 
   it("keeps provider reactions idempotent across the durable lifecycle hooks", async () => {
@@ -591,6 +593,7 @@ describe("Slack Phase 1 trigger provider", () => {
         "F2",
       );
       assert.ok(attachment);
+      assert.deepEqual(attachment.locator, { teamId: "T1", fileId: "F2", applicationId: "A1" });
       assert.deepEqual(context?.slack.trigger_message.attachments, [
         {
           id: attachment.id,

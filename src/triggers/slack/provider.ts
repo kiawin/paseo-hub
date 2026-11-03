@@ -101,6 +101,11 @@ export interface SlackTriggerContext {
 
 export interface SlackOutputContext {
   provider: "slack";
+  /**
+   * The Slack app that received the event, so replies, reactions and attachments use its token.
+   * Absent on contexts recorded before Hub ran several Slack apps.
+   */
+  applicationId?: string;
   organizationId: string;
   teamId: string;
   channelId: string;
@@ -153,6 +158,7 @@ export function createSlackTriggerProvider(options: {
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
         const outputContext: SlackOutputContext = {
           provider: "slack",
+          applicationId: rawEvent.appId,
           organizationId: trigger.organizationId,
           teamId: rawEvent.teamId,
           channelId: rawEvent.channelId,
@@ -231,6 +237,7 @@ export function createSlackTriggerProvider(options: {
           launch.providerEventReceiptId,
           launch.organizationId,
           launch.triggerContext.event.slack.team.id,
+          launch.triggerContext.target.applicationId,
           launch.triggerContext.event.slack.connection_id,
           launch.executionId,
           options.attachments,
@@ -291,6 +298,7 @@ export function createSlackTriggerProvider(options: {
             launch.providerEventReceiptId,
             launch.organizationId,
             launch.triggerContext.event.slack.team.id,
+            launch.triggerContext.target.applicationId,
             launch.triggerContext.event.slack.connection_id,
             launch.executionId,
             options.attachments,
@@ -461,6 +469,7 @@ async function registerAttachments(
   providerEventReceiptId: string,
   organizationId: string,
   teamId: string,
+  applicationId: string | undefined,
   connectionId: string | null,
   executionId: string,
   attachments: AttachmentCapabilityRegistry | undefined,
@@ -478,7 +487,11 @@ async function registerAttachments(
         connectionId,
         provider: "slack",
         sourceId: file.id,
-        locator: { teamId, fileId: file.id },
+        locator: {
+          teamId,
+          fileId: file.id,
+          ...(applicationId === undefined ? {} : { applicationId }),
+        },
         filename: file.filename,
         contentType: file.contentType,
         byteSize: file.size,

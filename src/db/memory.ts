@@ -3331,6 +3331,14 @@ class MemoryDatabase implements Database {
     return Promise.resolve(this.linearConnections.get(_linearOrganizationId));
   }
 
+  findSlackConnectionApplicationId(connectionId: string): Promise<string | null | undefined> {
+    return Promise.resolve(
+      Array.from(this.slackConnections.values()).find(
+        (connection) => connection.id === connectionId,
+      )?.providerApplicationId,
+    );
+  }
+
   findSlackConnectionById(
     organizationId: string,
     connectionId: string,

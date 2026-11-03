@@ -757,6 +757,15 @@ export class ConnectionRepository {
     return row === undefined ? undefined : slackConnection(row);
   }
 
+  async findSlackApplicationId(connectionId: string): Promise<string | null | undefined> {
+    const [row] = await this.database
+      .select({ providerApplicationId: schema.slackConnections.providerApplicationId })
+      .from(schema.slackConnections)
+      .where(eq(schema.slackConnections.id, connectionId))
+      .limit(1);
+    return row?.providerApplicationId;
+  }
+
   async findSlackById(
     organizationId: string,
     connectionId: string,

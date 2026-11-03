@@ -4288,6 +4288,10 @@ class PgDatabase implements Database {
     return this.connections.findSlackById(organizationId, connectionId);
   }
 
+  findSlackConnectionApplicationId(connectionId: string) {
+    return this.connections.findSlackApplicationId(connectionId);
+  }
+
   findLinearConnectionForOrganization(organizationId: string, linearOrganizationId: string) {
     return this.connections.findLinearForOrganization(organizationId, linearOrganizationId);
   }

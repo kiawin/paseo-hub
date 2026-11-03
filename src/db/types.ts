@@ -1667,6 +1667,11 @@ export interface Database {
     organizationId: string,
     connectionId: string,
   ): Promise<SlackConnectionRecord | undefined>;
+  /**
+   * The app a Slack connection belongs to, so its own registration handles it: null for a row from
+   * before apps were recorded, undefined when there is no such connection.
+   */
+  findSlackConnectionApplicationId(connectionId: string): Promise<string | null | undefined>;
   findLinearConnectionForOrganization(
     organizationId: string,
     linearOrganizationId: string,
