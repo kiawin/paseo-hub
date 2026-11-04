@@ -13,6 +13,17 @@ const SIGNING_DOMAIN = "paseo-hub/attachment-download/v1";
 const DEFAULT_LIFETIME_SECONDS = 15 * 60;
 const MAX_FILENAME_LENGTH = 255;
 const MAX_SOURCE_ID_LENGTH = 255;
+// Media types a browser can show without running anything, so an agent viewing the link sees the
+// file instead of a save dialog. Everything else, HTML and SVG included, still downloads.
+const INLINE_MEDIA_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "text/plain",
+  "application/json",
+  "application/pdf",
+]);
 
 export interface AttachmentReference {
   id: string;
@@ -186,7 +197,11 @@ export function createAttachmentCapabilityRegistry(options: {
       if (!upstreamIsEncoded && !headers.has("content-length") && attachment.byteSize !== null) {
         headers.set("content-length", String(attachment.byteSize));
       }
-      headers.set("content-disposition", contentDisposition(attachment.filename));
+      headers.set(
+        "content-disposition",
+        contentDisposition(attachment.filename, headers.get("content-type")),
+      );
+      headers.set("x-content-type-options", "nosniff");
       headers.set("cache-control", "no-store");
       return new Response(upstream.body, { status: 200, headers });
     },
@@ -315,11 +330,13 @@ function copyHeader(source: Headers, target: Headers, name: string): void {
   if (value !== null) target.set(name, value);
 }
 
-function contentDisposition(filename: string): string {
+function contentDisposition(filename: string, contentType: string | null): string {
   const safe = filename
     .replaceAll(/[\r\n]/gu, "_")
     .replaceAll(/[^\x20-\x7e]/gu, "_")
     .replaceAll('"', "_")
     .slice(0, MAX_FILENAME_LENGTH);
-  return `attachment; filename="${safe.length === 0 ? "attachment" : safe}"`;
+  const mediaType = (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  const disposition = INLINE_MEDIA_TYPES.has(mediaType) ? "inline" : "attachment";
+  return `${disposition}; filename="${safe.length === 0 ? "attachment" : safe}"`;
 }
