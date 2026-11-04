@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
+import {
+  activationReplaces,
+  providerApplicationLockKey,
+} from "../../db/provider-application-policy.js";
 import type { Locks } from "../../db/runtime/locks/index.js";
 import type { Database } from "../../db/types.js";
 import type {
@@ -138,7 +142,7 @@ export function createProviderApplicationStore(
       return result.rows.map(parseRow);
     },
     save(input) {
-      const key = applicationKey(input.provider, input.identity.id);
+      const key = providerApplicationLockKey(input.provider, input.identity.id);
       return locks.withLock(`provider-configuration:${key.join(":")}`, () =>
         database.transaction(async (transaction) => {
           await lockProviderActivation(locks, transaction, input.provider, input.identity.id);
@@ -196,7 +200,7 @@ export function createProviderApplicationStore(
       );
     },
     activate(input) {
-      const key = applicationKey(input.provider, input.identity.id);
+      const key = providerApplicationLockKey(input.provider, input.identity.id);
       return locks.withLock(`provider-configuration:${key.join(":")}`, () =>
         database.transaction(async (transaction) => {
           await lockProviderActivation(locks, transaction, input.provider, input.identity.id);
@@ -346,16 +350,11 @@ async function lockProviderActivation(
 ): Promise<void> {
   await locks.withTxLock(
     transaction,
-    JSON.stringify(["provider-application", ...applicationKey(provider, applicationId)]),
+    JSON.stringify([
+      "provider-application",
+      ...providerApplicationLockKey(provider, applicationId),
+    ]),
   );
-}
-
-/**
- * The lock and row key of one app. Slack runs several apps, each on its own key; every other
- * provider runs one, keyed by the provider alone, which GitHub installation sync also takes.
- */
-function applicationKey(provider: Provider, applicationId: string): readonly string[] {
-  return provider === "slack" ? [provider, applicationId] : [provider];
 }
 
 /** The app id that narrows a settings row to one app: Slack only, since others have one row. */
@@ -393,13 +392,11 @@ async function writeProviderActivation(
   applicationId: string,
   configurationVersion: number,
 ): Promise<void> {
-  // Slack runs several stored apps or one env-managed app (version 0); every other provider runs
-  // one, so activating its app replaces the last.
   await transaction.query(
     `delete from runtime_provider_activation
      where provider = $1 and provider_application_id <> $2
-       and ($1 <> 'slack' or $3::integer = 0 or configuration_version = 0)`,
-    [provider, applicationId, configurationVersion],
+       and ($3 = 'every other app' or configuration_version = 0)`,
+    [provider, applicationId, activationReplaces(provider, configurationVersion)],
   );
   await transaction.query(
     `insert into runtime_provider_activation

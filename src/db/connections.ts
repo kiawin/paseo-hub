@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Locks } from "./runtime/locks/index.js";
 import type { DatabaseRuntime, DrizzleHandle, TransactionHandle } from "./runtime/index.js";
 import { slugify } from "../slug.js";
+import { activationReplaces, providerApplicationLockKey } from "./provider-application-policy.js";
 import {
   ConnectionAccessDeniedError,
   ConnectionAttemptUnavailableError,
@@ -949,20 +950,20 @@ async function lockExternal(
   );
 }
 
-/**
- * Serializes changes to one app's settings and activation. Slack runs several apps, each on its own
- * key; every other provider runs one, keyed by the provider alone, which GitHub installation sync
- * also takes. Keep the key in step with the provider application store's.
- */
+/** Serializes changes to one app's settings and activation, on the key every writer shares. */
 async function lockProviderApplication(
   locks: Locks,
   transaction: TransactionHandle,
   provider: ConnectionProvider,
   applicationId: string | null,
 ): Promise<void> {
-  const key =
-    provider === "slack" && applicationId !== null ? [provider, applicationId] : [provider];
-  await locks.withTxLock(transaction, JSON.stringify(["provider-application", ...key]));
+  await locks.withTxLock(
+    transaction,
+    JSON.stringify([
+      "provider-application",
+      ...providerApplicationLockKey(provider, applicationId),
+    ]),
+  );
 }
 
 async function requireCurrentAttempt(
@@ -1111,15 +1112,13 @@ async function writeProviderActivation(
   applicationId: string,
   configurationVersion: number,
 ): Promise<void> {
-  // Slack runs several stored apps or one env-managed app (version 0); every other provider runs
-  // one, so activating its app replaces the last.
   await transaction
     .delete(schema.runtimeProviderActivations)
     .where(
       and(
         eq(schema.runtimeProviderActivations.provider, provider),
         ne(schema.runtimeProviderActivations.providerApplicationId, applicationId),
-        provider === "slack" && configurationVersion !== 0
+        activationReplaces(provider, configurationVersion) === "an environment-managed app"
           ? eq(schema.runtimeProviderActivations.configurationVersion, 0)
           : undefined,
       ),
