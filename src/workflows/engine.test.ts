@@ -2416,7 +2416,7 @@ async function slackTerminalDelivery(
   const logs = new FailureLogStream();
   const logger = createLogger(logs);
   const client = createSlackBotClient({
-    tokenForWorkspace: async () => (options.connected === false ? undefined : "xoxb-test"),
+    tokenForConnection: async () => (options.connected === false ? undefined : "xoxb-test"),
     fetch: async (input) => {
       const method = new URL(input instanceof Request ? input.url : input).pathname.slice(
         "/api/".length,
@@ -2429,13 +2429,13 @@ async function slackTerminalDelivery(
     configurationStoreForProject: () => {
       throw new Error("not used for terminal delivery");
     },
-    botUserIdForWorkspace: async () => "U-BOT",
+    botUserIdForConnection: async () => "U-BOT",
     client,
   });
   const target = {
     provider: "slack" as const,
     organizationId: "org-1",
-    teamId: "T1",
+    connectionId: "C-1",
     channelId: "C1",
     threadTs: "1.000001",
     messageTs: "1.000001",

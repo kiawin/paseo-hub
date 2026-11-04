@@ -8,6 +8,7 @@ const SLACK_MESSAGE_LIMIT = 40_000;
 const SlackReplyArgsSchema = z.object({ content: z.string().min(1) });
 const SlackReplyOutputContextSchema = z.object({
   organizationId: z.string().min(1),
+  connectionId: z.string().min(1),
   teamId: z.string().min(1),
   channelId: z.string().min(1),
   threadTs: z.string().min(1),
@@ -19,7 +20,10 @@ export function createSlackReplyExecutor(options: { client: SlackBotClient }): O
     const context = SlackReplyOutputContextSchema.parse(input.outputContext);
     const linkedContent = withExecutionLink(args.content, input.openInPaseoUrl, "slack");
     await options.client.sendMessage({
-      ...context,
+      organizationId: context.organizationId,
+      connectionId: context.connectionId,
+      channelId: context.channelId,
+      threadTs: context.threadTs,
       content: linkedContent.length <= SLACK_MESSAGE_LIMIT ? linkedContent : args.content,
     });
   };

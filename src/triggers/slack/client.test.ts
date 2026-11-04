@@ -7,7 +7,7 @@ describe("Slack Web API client", () => {
   it("looks up an authored username with the workspace bot token", async () => {
     let request: { url: string; method: string | undefined } | undefined;
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async (input, init) => {
         request = { url: requestUrl(input), method: init?.method };
         return Response.json({ ok: true, user: { name: "operator" } });
@@ -15,7 +15,7 @@ describe("Slack Web API client", () => {
     });
 
     assert.equal(
-      await client.lookupUserName?.({ organizationId: "org-1", teamId: "T1", userId: "U1" }),
+      await client.lookupUserName?.({ organizationId: "org-1", connectionId: "C-1", userId: "U1" }),
       "operator",
     );
     assert.deepEqual(request, {
@@ -28,10 +28,10 @@ describe("Slack Web API client", () => {
     const requests: Array<{ url: string; authorization: string | null; body: unknown }> = [];
     const authorities: Array<[string, string]> = [];
     const client = createSlackBotClient({
-      tokenForWorkspace: (organizationId, teamId) => {
-        authorities.push([organizationId, teamId]);
+      tokenForConnection: (organizationId, connectionId) => {
+        authorities.push([organizationId, connectionId]);
         return Promise.resolve(
-          organizationId === "org-1" && teamId === "T1" ? "xoxb-secret" : undefined,
+          organizationId === "org-1" && connectionId === "C-1" ? "xoxb-secret" : undefined,
         );
       },
       fetch: async (input, init) => {
@@ -45,12 +45,12 @@ describe("Slack Web API client", () => {
     });
     await client.sendMessage({
       organizationId: "org-1",
-      teamId: "T1",
+      connectionId: "C-1",
       channelId: "C1",
       threadTs: "1.1",
       content: "Hi",
     });
-    assert.deepEqual(authorities, [["org-1", "T1"]]);
+    assert.deepEqual(authorities, [["org-1", "C-1"]]);
     assert.deepEqual(requests, [
       {
         url: "https://slack.com/api/chat.postMessage",
@@ -66,14 +66,14 @@ describe("Slack Web API client", () => {
     ]);
 
     const rejected = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: () => Promise.resolve(Response.json({ ok: false, error: "ratelimited" })),
     });
     await assert.rejects(
       () =>
         rejected.addReaction({
           organizationId: "org-1",
-          teamId: "T1",
+          connectionId: "C-1",
           channelId: "C1",
           messageTs: "1.1",
           name: "eyes",
@@ -85,11 +85,13 @@ describe("Slack Web API client", () => {
     );
   });
 
-  it("fails closed without making a request when workspace ownership does not match", async () => {
+  it("fails closed without making a request when connection ownership does not match", async () => {
     let fetches = 0;
     const client = createSlackBotClient({
-      tokenForWorkspace: (organizationId, teamId) =>
-        Promise.resolve(organizationId === "org-b" && teamId === "T1" ? "token-b" : undefined),
+      tokenForConnection: (organizationId, connectionId) =>
+        Promise.resolve(
+          organizationId === "org-b" && connectionId === "C-1" ? "token-b" : undefined,
+        ),
       fetch: () => {
         fetches += 1;
         return Promise.resolve(Response.json({ ok: true }));
@@ -100,12 +102,12 @@ describe("Slack Web API client", () => {
       () =>
         client.removeReaction({
           organizationId: "org-a",
-          teamId: "T1",
+          connectionId: "C-1",
           channelId: "C1",
           messageTs: "1.1",
           name: "eyes",
         }),
-      /not connected/u,
+      /connection is unavailable/u,
     );
     assert.equal(fetches, 0);
   });
@@ -113,7 +115,7 @@ describe("Slack Web API client", () => {
   it("aborts a Slack API call that does not respond before its deadline", async () => {
     let requestSignal: AbortSignal | undefined;
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       requestTimeoutMs: 5,
       fetch: (_input, init) => {
         const signal = init?.signal;
@@ -129,7 +131,7 @@ describe("Slack Web API client", () => {
       () =>
         client.addReaction({
           organizationId: "org-1",
-          teamId: "T1",
+          connectionId: "C-1",
           channelId: "C1",
           messageTs: "1.1",
           name: "hourglass_flowing_sand",
@@ -141,7 +143,7 @@ describe("Slack Web API client", () => {
 
   it("treats a reaction that is already in place, or whose message is gone, as done", async () => {
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async (input) =>
         Response.json({
           ok: false,
@@ -150,7 +152,7 @@ describe("Slack Web API client", () => {
     });
     const reaction = {
       organizationId: "org-1",
-      teamId: "T1",
+      connectionId: "C-1",
       channelId: "C1",
       messageTs: "1.1",
       name: "white_check_mark",
@@ -161,7 +163,7 @@ describe("Slack Web API client", () => {
 
     for (const error of ["message_not_found", "channel_not_found"]) {
       const gone = createSlackBotClient({
-        tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+        tokenForConnection: () => Promise.resolve("xoxb-secret"),
         fetch: async () => Response.json({ ok: false, error }),
       });
       await gone.addReaction(reaction);
@@ -169,7 +171,7 @@ describe("Slack Web API client", () => {
     }
 
     const mismatched = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async (input) =>
         Response.json({
           ok: false,
@@ -182,7 +184,7 @@ describe("Slack Web API client", () => {
 
   it("reports an HTTP 429 as ratelimited with the wait Slack asked for", async () => {
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async () =>
         Response.json(
           { ok: false, error: "ratelimited" },
@@ -193,7 +195,7 @@ describe("Slack Web API client", () => {
     const error = await client
       .addReaction({
         organizationId: "org-1",
-        teamId: "T1",
+        connectionId: "C-1",
         channelId: "C1",
         messageTs: "1.1",
         name: "white_check_mark",
@@ -220,14 +222,14 @@ describe("Slack Web API client", () => {
     ["fatal_error", true],
   ] as const)("tells a caller whether Slack's %s can succeed on retry", async (code, retryable) => {
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async () => Response.json({ ok: false, error: code }),
     });
 
     const error = await client
       .sendMessage({
         organizationId: "org-1",
-        teamId: "T1",
+        connectionId: "C-1",
         channelId: "C1",
         threadTs: "1.1",
         content: "done",
@@ -244,7 +246,7 @@ describe("Slack Web API client", () => {
   it("does not retry a call for a workspace that is no longer connected", async () => {
     let requested = false;
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve(undefined),
+      tokenForConnection: () => Promise.resolve(undefined),
       fetch: async () => {
         requested = true;
         return Response.json({ ok: true });
@@ -254,7 +256,7 @@ describe("Slack Web API client", () => {
     const error = await client
       .addReaction({
         organizationId: "org-1",
-        teamId: "T1",
+        connectionId: "C-1",
         channelId: "C1",
         messageTs: "1.1",
         name: "white_check_mark",
@@ -265,14 +267,11 @@ describe("Slack Web API client", () => {
       );
 
     assert.equal(requested, false);
-    assert.match(String(error), /Slack workspace is not connected/u);
+    assert.match(String(error), /Slack connection is unavailable/u);
     assert.deepEqual(retryAdvice(error), { retryable: false });
   });
 
   it("keeps the root with the latest 199 preceding Slack replies, oldest first", async () => {
-=======
-  it("keeps the root with the latest 199 preceding Slack replies, oldest first", async () => {
->>>>>>> 0a4777c (fix(slack): fix attachment and user lookups, keep 200 thread messages (#8))
     const requests: Array<{ method: string; url: string; body: BodyInit | null | undefined }> = [];
     const messages = [
       { ts: "1700000000.000000", text: "root request", user: "UROOT" },
@@ -287,7 +286,7 @@ describe("Slack Web API client", () => {
     ];
     const pageSize = 100;
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async (input, init) => {
         requests.push({
           method: init?.method ?? "GET",
@@ -310,7 +309,7 @@ describe("Slack Web API client", () => {
 
     const hydrated = await client.readThreadMessages?.({
       organizationId: "org-1",
-      teamId: "T1",
+      connectionId: "C-1",
       channelId: "C1",
       threadTs: "1700000000.000000",
       beforeTs: "1700000000.000456",
@@ -349,7 +348,7 @@ describe("Slack Web API client", () => {
       })),
     ];
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async (input) => {
         const cursor = new URL(requestUrl(input)).searchParams.get("cursor");
         const page = cursor === null ? 0 : Number(cursor.replace("page-", ""));
@@ -363,7 +362,7 @@ describe("Slack Web API client", () => {
 
     const hydrated = await client.readThreadMessages?.({
       organizationId: "org-1",
-      teamId: "T1",
+      connectionId: "C-1",
       channelId: "C1",
       threadTs: "1700000000.000000",
       beforeTs: "1700000000.000200",
@@ -377,7 +376,7 @@ describe("Slack Web API client", () => {
   it("keeps earlier Slack replies when a later page is rate-limited", async () => {
     let requests = 0;
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async () => {
         requests += 1;
         return requests === 1
@@ -396,7 +395,7 @@ describe("Slack Web API client", () => {
 
     const hydrated = await client.readThreadMessages?.({
       organizationId: "org-1",
-      teamId: "T1",
+      connectionId: "C-1",
       channelId: "C1",
       threadTs: "1700000000.000000",
       beforeTs: "1700000000.000003",
@@ -412,7 +411,7 @@ describe("Slack Web API client", () => {
 
   it("rejects Slack thread context when the API omits its root", async () => {
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: () =>
         Promise.resolve(
           Response.json({
@@ -425,7 +424,7 @@ describe("Slack Web API client", () => {
       () =>
         client.readThreadMessages!({
           organizationId: "org-1",
-          teamId: "T1",
+          connectionId: "C-1",
           channelId: "C1",
           threadTs: "1700000000.000000",
           beforeTs: "1700000000.000002",
@@ -437,7 +436,7 @@ describe("Slack Web API client", () => {
   it("keeps Slack file credentials and private URLs inside the client", async () => {
     const requests: Array<{ url: string; authorization: string | null }> = [];
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async (input, init) => {
         requests.push({
           url: requestUrl(input),
@@ -460,7 +459,7 @@ describe("Slack Web API client", () => {
 
     const response = await client.downloadAttachment?.({
       organizationId: "org-1",
-      teamId: "T1",
+      connectionId: "C-1",
       fileId: "F1",
     });
 
@@ -476,7 +475,7 @@ describe("Slack Web API client", () => {
 
   it("throws SlackApiError with Slack's error code when files.info fails", async () => {
     const client = createSlackBotClient({
-      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
       fetch: async () => Response.json({ ok: false, error: "file_not_found" }),
     });
 
@@ -484,7 +483,7 @@ describe("Slack Web API client", () => {
       () =>
         client.downloadAttachment!({
           organizationId: "org-1",
-          teamId: "T1",
+          connectionId: "C-1",
           fileId: "F-missing",
         }),
       (error: unknown) =>

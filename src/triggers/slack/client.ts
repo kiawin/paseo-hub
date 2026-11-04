@@ -62,43 +62,44 @@ export interface SlackThreadReadResult {
   complete: boolean;
 }
 
+/** Every call is made with one Slack connection's bot token, so it acts as that app's bot. */
 export interface SlackBotClient {
   sendMessage(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     channelId: string;
     threadTs: string;
     content: string;
   }): Promise<void>;
   addReaction(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     channelId: string;
     messageTs: string;
     name: string;
   }): Promise<void>;
   removeReaction(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     channelId: string;
     messageTs: string;
     name: string;
   }): Promise<void>;
   readThreadMessages?(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     channelId: string;
     threadTs: string;
     beforeTs: string;
   }): Promise<SlackThreadReadResult>;
   lookupUserName?(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     userId: string;
   }): Promise<string | undefined>;
   downloadAttachment?(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     fileId: string;
   }): Promise<Response>;
 }
@@ -138,7 +139,7 @@ const SLACK_ERROR_KINDS = new Map<string, FailureKind>([
 ]);
 
 function workspaceNotConnected(): UpstreamFailure {
-  return new UpstreamFailure("Slack workspace is not connected", "credentialsRejected");
+  return new UpstreamFailure("Slack connection is unavailable", "credentialsRejected");
 }
 
 /** Slack answers a rate-limited call with HTTP 429 and the seconds to wait in `Retry-After`. */
@@ -155,7 +156,7 @@ function throwForHttpStatus(response: Response): void {
 }
 
 export function createSlackBotClient(options: {
-  tokenForWorkspace(organizationId: string, teamId: string): Promise<string | undefined>;
+  tokenForConnection(organizationId: string, connectionId: string): Promise<string | undefined>;
   fetch?: typeof fetch;
   requestTimeoutMs?: number;
 }): SlackBotClient {
@@ -163,12 +164,12 @@ export function createSlackBotClient(options: {
 
   async function call(
     organizationId: string,
-    teamId: string,
+    connectionId: string,
     method: string,
     body: Record<string, string | boolean>,
     settledErrors: readonly string[] = [],
   ): Promise<void> {
-    const token = await options.tokenForWorkspace(organizationId, teamId);
+    const token = await options.tokenForConnection(organizationId, connectionId);
     if (token === undefined) throw workspaceNotConnected();
     const response = await request(`https://slack.com/api/${method}`, {
       method: "POST",
@@ -188,11 +189,11 @@ export function createSlackBotClient(options: {
 
   async function queryJson(
     organizationId: string,
-    teamId: string,
+    connectionId: string,
     method: string,
     query: Record<string, string>,
   ): Promise<unknown> {
-    const token = await options.tokenForWorkspace(organizationId, teamId);
+    const token = await options.tokenForConnection(organizationId, connectionId);
     if (token === undefined) throw workspaceNotConnected();
     const url = new URL(`https://slack.com/api/${method}`);
     for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
@@ -207,7 +208,7 @@ export function createSlackBotClient(options: {
 
   async function readThreadMessages(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     channelId: string;
     threadTs: string;
     beforeTs: string;
@@ -222,7 +223,7 @@ export function createSlackBotClient(options: {
       let result: z.infer<typeof SlackThreadRepliesSchema>;
       try {
         result = SlackThreadRepliesSchema.parse(
-          await queryJson(input.organizationId, input.teamId, "conversations.replies", {
+          await queryJson(input.organizationId, input.connectionId, "conversations.replies", {
             channel: input.channelId,
             ts: input.threadTs,
             latest: input.beforeTs,
@@ -237,7 +238,9 @@ export function createSlackBotClient(options: {
         reportFailure(
           error,
           { operation: "slack.thread.history.page", component: "providers", provider: "slack" },
-          { diagnostic: { teamId: input.teamId, channelId: input.channelId, pagesRead } },
+          {
+            diagnostic: { connectionId: input.connectionId, channelId: input.channelId, pagesRead },
+          },
         );
         complete = false;
         break;
@@ -276,13 +279,15 @@ export function createSlackBotClient(options: {
 
   async function downloadAttachment(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     fileId: string;
   }): Promise<Response> {
-    const token = await options.tokenForWorkspace(input.organizationId, input.teamId);
+    const token = await options.tokenForConnection(input.organizationId, input.connectionId);
     if (token === undefined) throw workspaceNotConnected();
     const result = SlackFileInfoSchema.parse(
-      await queryJson(input.organizationId, input.teamId, "files.info", { file: input.fileId }),
+      await queryJson(input.organizationId, input.connectionId, "files.info", {
+        file: input.fileId,
+      }),
     );
     if (!result.ok) throw new SlackApiError(result.error);
     if (result.file?.id !== input.fileId) {
@@ -304,11 +309,13 @@ export function createSlackBotClient(options: {
 
   async function lookupUserName(input: {
     organizationId: string;
-    teamId: string;
+    connectionId: string;
     userId: string;
   }): Promise<string | undefined> {
     const result = SlackUserInfoSchema.parse(
-      await queryJson(input.organizationId, input.teamId, "users.info", { user: input.userId }),
+      await queryJson(input.organizationId, input.connectionId, "users.info", {
+        user: input.userId,
+      }),
     );
     if (!result.ok) throw new SlackApiError(result.error);
     return result.user?.name;
@@ -316,7 +323,7 @@ export function createSlackBotClient(options: {
 
   return {
     sendMessage: (input) =>
-      call(input.organizationId, input.teamId, "chat.postMessage", {
+      call(input.organizationId, input.connectionId, "chat.postMessage", {
         channel: input.channelId,
         thread_ts: input.threadTs,
         text: input.content,
@@ -329,7 +336,7 @@ export function createSlackBotClient(options: {
     addReaction: (input) =>
       call(
         input.organizationId,
-        input.teamId,
+        input.connectionId,
         "reactions.add",
         { channel: input.channelId, timestamp: input.messageTs, name: input.name },
         ["already_reacted", ...SLACK_REACTION_TARGET_GONE],
@@ -337,7 +344,7 @@ export function createSlackBotClient(options: {
     removeReaction: (input) =>
       call(
         input.organizationId,
-        input.teamId,
+        input.connectionId,
         "reactions.remove",
         { channel: input.channelId, timestamp: input.messageTs, name: input.name },
         ["no_reaction", ...SLACK_REACTION_TARGET_GONE],

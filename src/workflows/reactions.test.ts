@@ -187,7 +187,7 @@ describe("workflow-owned provider reactions", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: async () => "UBOT",
+      botUserIdForConnection: async () => "UBOT",
       client,
     });
     const lifecycle = createDaemonDispatchLifecycle({
@@ -218,7 +218,7 @@ describe("workflow-owned provider reactions", () => {
         projectId: project.id,
         configurationRevisionId: revision.id,
         providerEventReceiptId: receiptId,
-        connectionId: null,
+        connectionId: "A1",
         resourceId: "T1",
         source: "slack.mention",
         deliveryId: "slack-slow-eyes",
@@ -356,7 +356,7 @@ describe("workflow-owned provider reactions", () => {
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      botUserIdForWorkspace: async () => "UBOT",
+      botUserIdForConnection: async () => "UBOT",
       client,
     });
     const connection: DaemonConnection = {
@@ -367,6 +367,7 @@ describe("workflow-owned provider reactions", () => {
         control: async () => {},
         restore: async () => false,
         watch: async () => () => {},
+        lastAssistantMessage: async () => undefined,
       },
       getProviderSnapshot: async () => {
         throw new Error("not used");
@@ -403,7 +404,7 @@ describe("workflow-owned provider reactions", () => {
         projectId: project.id,
         configurationRevisionId: revision.id,
         providerEventReceiptId: slackReceiptId,
-        connectionId: null,
+        connectionId: "A1",
         resourceId: "T1",
         source: "slack.mention",
         deliveryId: "slack-slow-eyes-nonblocking",
@@ -522,7 +523,7 @@ function createSlackReactionFixture() {
   const provider = createSlackTriggerProvider({
     configurationStoreForProject: () =>
       new ProjectConfigurationStore(createMemoryDatabase(), "unused"),
-    botUserIdForWorkspace: async () => "bot-1",
+    botUserIdForConnection: async () => "bot-1",
     client,
   });
   return {
@@ -532,6 +533,7 @@ function createSlackReactionFixture() {
       target: {
         provider: "slack",
         organizationId: "org-reactions",
+        connectionId: "connection-1",
         teamId: "team-1",
         channelId: "channel-1",
         threadTs: "1700000000.000001",
@@ -542,6 +544,7 @@ function createSlackReactionFixture() {
     outputContext: {
       provider: "slack",
       organizationId: "org-reactions",
+      connectionId: "connection-1",
       teamId: "team-1",
       channelId: "channel-1",
       threadTs: "1700000000.000001",

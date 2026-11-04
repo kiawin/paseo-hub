@@ -16,7 +16,8 @@ import { useConnectionReturn } from "../connections/result.js";
 import { PROVIDER_GUIDES } from "./guides.js";
 import { providerApplicationsOverview } from "./functions.js";
 import { ProviderSection, ProviderSectionLoading } from "./provider-section.js";
-import type { Provider, ProviderApplicationOverview, ProviderApplicationSurface } from "./index.js";
+import type { Provider, ProviderApplicationSurface } from "./index.js";
+import { connectedProviderCount, sectionViews } from "./overview.js";
 
 const OVERVIEW_KEY = ["provider-applications"] as const;
 
@@ -32,10 +33,6 @@ function useProviderApplicationsOverview() {
     queryFn: () => load(),
     refetchInterval: 1_000,
   });
-}
-
-function connectedProviderCount(overview: ProviderApplicationOverview): number {
-  return Object.values(overview.providers).filter((view) => view.connections.length > 0).length;
 }
 
 /**
@@ -81,7 +78,7 @@ function ProviderApplications({
         >
           <ProviderSection
             guide={guide}
-            view={overview.providers[guide.provider]}
+            views={sectionViews(overview, guide.provider)}
             callbackOrigin={overview.callbackOrigin}
             surface={surface}
             organizationId={organizationId}

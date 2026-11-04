@@ -1,6 +1,6 @@
 {
-  "id": "142ab350-ea11-4ab1-b196-d158284d71c1",
-  "prevId": "e6686a5f-c244-4e2d-a72b-ce1f6dd729da",
+  "id": "1694e107-7f89-4236-bab0-bf63ee5a58ed",
+  "prevId": "61951e5b-b5b3-41de-aeab-b9a24c1385af",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5267,7 +5267,7 @@
         "provider": {
           "name": "provider",
           "type": "text",
-          "primaryKey": true,
+          "primaryKey": false,
           "notNull": true
         },
         "provider_application_id": {
@@ -5290,9 +5290,31 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "runtime_provider_activation_single_app_unique": {
+          "name": "runtime_provider_activation_single_app_unique",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"runtime_provider_activation\".\"provider\" <> 'slack'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
+      "compositePrimaryKeys": {
+        "runtime_provider_activation_provider_provider_application_id_pk": {
+          "name": "runtime_provider_activation_provider_provider_application_id_pk",
+          "columns": ["provider", "provider_application_id"]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
@@ -5314,7 +5336,13 @@
         "provider": {
           "name": "provider",
           "type": "text",
-          "primaryKey": true,
+          "primaryKey": false,
+          "notNull": true
+        },
+        "application_id": {
+          "name": "application_id",
+          "type": "text",
+          "primaryKey": false,
           "notNull": true
         },
         "configuration": {
@@ -5356,7 +5384,24 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "runtime_provider_configuration_single_app_unique": {
+          "name": "runtime_provider_configuration_single_app_unique",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"runtime_provider_configuration\".\"provider\" <> 'slack'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "runtime_provider_configuration_updated_by_user_id_user_id_fk": {
           "name": "runtime_provider_configuration_updated_by_user_id_user_id_fk",
@@ -5368,7 +5413,12 @@
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {},
+      "compositePrimaryKeys": {
+        "runtime_provider_configuration_provider_application_id_pk": {
+          "name": "runtime_provider_configuration_provider_application_id_pk",
+          "columns": ["provider", "application_id"]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
@@ -5607,6 +5657,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "slack_connections_application_team_unique": {
+          "name": "slack_connections_application_team_unique",
+          "columns": [
+            {
+              "expression": "provider_application_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -5630,13 +5701,7 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "slack_connections_team_id_unique": {
-          "name": "slack_connections_team_id_unique",
-          "nullsNotDistinct": false,
-          "columns": ["team_id"]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -5773,6 +5838,25 @@
         },
         "terminal_notification_lease_expires_at": {
           "name": "terminal_notification_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terminal_notification_attempts": {
+          "name": "terminal_notification_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "terminal_notification_next_attempt_at": {
+          "name": "terminal_notification_next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terminal_notification_abandoned_at": {
+          "name": "terminal_notification_abandoned_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

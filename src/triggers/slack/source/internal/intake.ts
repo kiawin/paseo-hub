@@ -52,7 +52,8 @@ export async function acceptSlackEvent(
   const normalizedEvent = normalizeSlackEvent(callback.data);
   if (normalizedEvent === undefined) return [];
 
-  const deliveryId = `slack-${normalizedEvent.id}`;
+  // Each app receives its own copy of an event, under the same event id.
+  const deliveryId = `slack-${options.appId}-${normalizedEvent.id}`;
   const acceptance = await options.accept({
     teamId: normalizedEvent.teamId,
     deliveryId,
