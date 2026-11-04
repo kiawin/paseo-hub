@@ -1930,6 +1930,8 @@ const DISPATCH_PREPARATION_FAILURE_CODES = new Set([
   "github_authority_unavailable",
   "github_integration_unavailable",
   "github_trigger_unavailable",
+  "provider_not_configured",
+  "slack_application_required",
   "slack_trigger_unavailable",
 ]);
 

@@ -71,6 +71,16 @@ export interface SlackSocketIntakeHealth {
 
 export type SlackIntakeHealth = SlackSocketIntakeHealth | { transport: "webhook" };
 
+/**
+ * The receipt hash of a Socket Mode envelope. Receipt hashes are unique across every app, and two
+ * apps can be handed the same envelope id, so the hash names the app as well.
+ */
+export function slackSocketSignatureHash(appId: string, envelopeId: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify([appId, envelopeId]))
+    .digest("hex");
+}
+
 export interface SlackSocketSource extends TriggerSource {
   status(): SlackDeliveryStatus;
   retry(): Promise<void>;
@@ -367,7 +377,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     payload: unknown,
     bytes: number,
   ): Promise<void> {
-    const signatureHash = createHash("sha256").update(envelopeId).digest("hex");
+    const signatureHash = slackSocketSignatureHash(options.appId, envelopeId);
     let events: AcceptedSlackEvents = [];
     const acceptStartedAt = startPhase(link, "accept").startedAt;
     // Ignored events (bot messages) never reach the durable store, so they prove nothing.

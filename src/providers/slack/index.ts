@@ -135,8 +135,8 @@ export function createSlackRegistration(
   const bot =
     options.botClient ??
     createSlackBotClient({
-      tokenForWorkspace: async (organizationId, teamId) =>
-        (await findSlackBindingForOrganization(database, organizationId, teamId))?.botAccessToken,
+      tokenForConnection: async (organizationId, connectionId) =>
+        (await findUsableSlackConnection(database, organizationId, connectionId))?.botAccessToken,
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     });
   const connection =
@@ -170,8 +170,8 @@ export function createSlackRegistration(
           billingUrlForOrganization: (organizationId) =>
             organizationBillingUrl(database, options.publicBaseUrl!, organizationId),
           ...(attachments === undefined ? {} : { attachments }),
-          botUserIdForWorkspace: async (organizationId, teamId) =>
-            (await findSlackBindingForOrganization(database, organizationId, teamId))?.botUserId,
+          botUserIdForConnection: async (organizationId, connectionId) =>
+            (await findUsableSlackConnection(database, organizationId, connectionId))?.botUserId,
           client: bot,
         }),
     ],
@@ -201,14 +201,15 @@ function slackSocketOptions(
   return options.socket === undefined ? {} : { socket: options.socket };
 }
 
-async function findSlackBindingForOrganization(
+/** One connection of the organization, usable only while it still has the scopes Hub needs. */
+async function findUsableSlackConnection(
   database: Database,
   organizationId: string,
-  teamId: string,
+  connectionId: string,
 ): Promise<SlackConnectionRecord | undefined> {
-  const binding = await database.findSlackConnectionForOrganization(organizationId, teamId);
-  return binding?.organizationId === organizationId && hasRequiredSlackScopes(binding.scopes)
-    ? binding
+  const connection = await database.findSlackConnectionById(organizationId, connectionId);
+  return connection !== undefined && hasRequiredSlackScopes(connection.scopes)
+    ? connection
     : undefined;
 }
 

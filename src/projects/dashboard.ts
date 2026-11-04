@@ -249,6 +249,7 @@ function connectionUsageView(
       slug: connection.slug,
       teamId: connection.teamId,
       teamName: connection.teamName,
+      providerApplicationId: connection.providerApplicationId,
       requiresReauthorization: !hasRequiredSlackScopes(connection.scopes),
     })),
     linear: connections.linear.map((connection) => ({

@@ -10,12 +10,15 @@ import { cn } from "../../lib/utils.js";
 export function Section({
   title,
   description,
+  status,
   action,
   children,
   className,
 }: {
   title?: string;
   description?: string;
+  /** The single status indicator for what the section holds, beside its heading. */
+  status?: ReactNode;
   /** A single trailing link or button, e.g. "View all". */
   action?: ReactNode;
   children: ReactNode;
@@ -27,7 +30,14 @@ export function Section({
       {title === undefined ? null : (
         <div className="flex min-w-0 items-start justify-between gap-4">
           <div className="grid min-w-0 gap-1">
-            <h2 className="text-sm text-foreground">{title}</h2>
+            {status === undefined ? (
+              <h2 className="text-sm text-foreground">{title}</h2>
+            ) : (
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <h2 className="text-sm text-foreground">{title}</h2>
+                {status}
+              </div>
+            )}
             {description === undefined ? null : (
               <p className="text-sm text-muted-foreground">{description}</p>
             )}

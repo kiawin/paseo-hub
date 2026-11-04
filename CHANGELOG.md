@@ -4,12 +4,14 @@
 
 ### Added
 
+- Hub can run several Slack apps at once, in the same workspace or in different ones, so each bot answers to its own name. Add another app under Instance → Apps → Slack with **Add Slack app**; each app is created in Slack from its own manifest, named in the setup step, and has its own status, connections and retry. A mention of one app only reaches triggers routed to that app's connection, and replies use that app's bot. Webhook apps share the existing events URL; Hub routes each request to the app whose signing secret verifies it. `/health/slack` reports unhealthy when any app's intake is down and lists every app under `apps`. When more than one Slack webhook app can be installed, a project's **Connect Slack** asks which one. A Slack app set from environment variables is still the only Slack app.
 - `github.pull_request_synchronized` triggers a workflow when new commits are pushed to a pull request, with the pushed head SHA in the agent context.
 - The GitHub `exclude_contains` filter skips an event whose text contains the given string, so a general mention trigger can leave a command such as `@bot review` to the trigger that owns it.
 - `github.pull_request_ready_for_review` triggers a workflow when a draft pull request is marked ready for review, without running on creation or later pushes. GitHub pull request deliveries expose the draft status and head SHA in the agent context for revision checks.
 
 ### Changed
 
+- App settings are stored per app. The upgrade migration keys each provider's existing settings by its app and assigns every existing Slack connection to the one stored Slack app, so a Hub with one Slack app keeps its settings, connections and connection slugs with no action. A second app's Socket Mode connection in a workspace that already has one gets the slug `slack-<team id>-<app id>`, in lower case. Three consequences of the upgrade: a Slack thread started before it is a new conversation on its next mention, because conversations are now kept per app; an event Slack redelivers across the restart can run twice, because Slack delivery ids now include the app; and a Slack run still in flight across the restart cannot reply or react, because its saved context names no app or connection and Hub no longer guesses one. Restart Hub when no Slack run is in flight.
 - Unhandled provider event receipts expire automatically after seven days on every instance. Receipts routed to a trigger or still referenced by a run or attachment remain available.
 
 ## 0.11.0 - 2026-10-25

@@ -1,5 +1,11 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
+import {
+  SECOND_SLACK_SOCKET_CREDENTIALS,
+  expectSlackDelivered,
+  slackPersistedState,
+} from "./helpers/apps.js";
+import { slackTriggerRoutes } from "./helpers/hub.js";
 import { OrganizationTriggers } from "./helpers/triggers.js";
 
 const SHOTS = "e2e/screenshots/triggers";
@@ -152,6 +158,160 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.expectLegacyReadOnly();
     await triggers.capture(`${SHOTS}/07-legacy-workflow-warning.png`);
   });
+});
+
+test("routes one trigger to each Slack app's connection in one workspace", async ({
+  hub,
+  page,
+}) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme");
+  // Two bots in the one workspace: each app's installation is its own connection.
+  await hub.seedSlackConnection("owner", "acme-sian", "Acme", {
+    teamId: "T-SHARED",
+    applicationId: "browser-slack-app",
+    botUserId: "B1",
+    botAccessToken: "xoxb-seeded-1",
+  });
+  await hub.seedSlackConnection("owner", "acme-moe", "Acme", {
+    teamId: "T-SHARED",
+    applicationId: "browser-slack-app-2",
+    botUserId: "B2",
+    botAccessToken: "xoxb-seeded-2",
+  });
+  const triggers = new OrganizationTriggers(page);
+  await triggers.open();
+  for (const [name, connection] of [
+    ["ask-sian", "acme-sian"],
+    ["ask-moe", "acme-moe"],
+  ] as const) {
+    await triggers.startNew();
+    await triggers.configureSlackMention({
+      name,
+      connection,
+      daemon,
+      cwd: "/workspace/acme",
+      users: "U123",
+      agent: "opencode/gateway/vendor/model-v1",
+      mode: "full-access",
+      thinking: "high",
+      providerOptions: '{"sandbox_mode":"workspace-write"}',
+      prompt: `Answer as ${name}.`,
+    });
+    await triggers.save(name);
+  }
+  await triggers.expectOperationalList("ask-moe");
+  // The editor stored one route per connection; the next test mentions each bot against them.
+  expect(
+    (await hub.slackTriggerRoutes("T-SHARED")).map(
+      ({ connectionId: _connectionId, ...route }) => route,
+    ),
+  ).toEqual([
+    { trigger: "ask-moe", connection: "acme-moe", app: "browser-slack-app-2" },
+    { trigger: "ask-sian", connection: "acme-sian", app: "browser-slack-app" },
+  ]);
+});
+
+test("a mention of each Slack app launches only the trigger routed to its own connection", async ({
+  hub,
+}) => {
+  const session = await hub.openAppSetup({
+    account: {
+      name: "Two Bots Operator",
+      email: "two-bots-operator@example.com",
+      password: "two-bots-operator-password",
+    },
+  });
+  try {
+    const { page, surface, application } = session;
+    const slack = surface.slack;
+    const [first, second] = ["browser-slack-app", "browser-slack-app-2"] as const;
+    // Two real Socket Mode apps in one workspace, each with the bot and token it was saved with.
+    await slack.expand();
+    await slack.fillWorkingCredentials();
+    await slack.save();
+    await slack.expectSlackAppStatus(first, "Connected");
+    await slack.addSlackApp();
+    await slack.fill(SECOND_SLACK_SOCKET_CREDENTIALS);
+    await slack.save();
+    await slack.expectSlackAppStatus(second, "Connected");
+    const state = await slackPersistedState(application);
+    expect(state[first]?.connection?.botAccessToken).not.toEqual(
+      state[second]?.connection?.botAccessToken,
+    );
+    const slugs = {
+      [first]: String(state[first]?.connection?.slug),
+      [second]: String(state[second]?.connection?.slug),
+    };
+    await surface.leave("Finish");
+    const daemon = await session.connectDaemon();
+
+    // One trigger per bot, each routed to its own app's connection from the trigger form.
+    const triggers = new OrganizationTriggers(page);
+    await triggers.open();
+    for (const [name, appId] of [
+      ["ask-sian", first],
+      ["ask-moe", second],
+    ] as const) {
+      await triggers.startNew();
+      await triggers.configureSlackMention({
+        name,
+        connection: slugs[appId],
+        daemon,
+        cwd: "/workspace/acme",
+        users: "U1",
+        agent: "opencode/gateway/vendor/model-v1",
+        mode: "full-access",
+        thinking: "high",
+        providerOptions: '{"sandbox_mode":"workspace-write"}',
+        prompt: `Answer as ${name}.`,
+      });
+      await triggers.save(name);
+    }
+    const routes = await slackTriggerRoutes(
+      (sql, params) => application.query(sql, params),
+      "T-ACME",
+    );
+    expect(routes.map(({ trigger, app }) => ({ trigger, app }))).toEqual([
+      { trigger: "ask-moe", app: second },
+      { trigger: "ask-sian", app: first },
+    ]);
+
+    // Each bot is mentioned once. Each mention starts one run, of the trigger bound to the
+    // connection that received it: the other bot's trigger is not launched.
+    const eventId = "browser-trigger-two-apps";
+    await Promise.all([
+      session.deliverSlackSocketMention(eventId, first),
+      session.deliverSlackSocketMention(eventId, second),
+    ]);
+    await expectSlackDelivered(session, eventId, first);
+    await expectSlackDelivered(session, eventId, second);
+    const runs = await application.query(
+      `select receipt.delivery_id delivery, run.configured_trigger_name trigger,
+         run.output_context->>'connectionId' connection
+       from trigger_runs run
+       join provider_event_receipts receipt on receipt.id = run.provider_event_receipt_id
+       where receipt.delivery_id like $1 order by receipt.delivery_id`,
+      [`slack-%-${eventId}`],
+    );
+    const routeOf = (trigger: string) => routes.find((route) => route.trigger === trigger);
+    expect(runs).toEqual([
+      {
+        delivery: `slack-${second}-${eventId}`,
+        trigger: "ask-moe",
+        connection: routeOf("ask-moe")?.connectionId,
+      },
+      {
+        delivery: `slack-${first}-${eventId}`,
+        trigger: "ask-sian",
+        connection: routeOf("ask-sian")?.connectionId,
+      },
+    ]);
+    expect(routeOf("ask-moe")?.connectionId).not.toEqual(routeOf("ask-sian")?.connectionId);
+  } finally {
+    await session.close();
+  }
 });
 
 for (const scenario of [

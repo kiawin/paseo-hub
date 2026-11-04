@@ -142,8 +142,9 @@ export async function startSlackSocketFixture(
     get outstanding() {
       return unfinished.size + sockets.clients.size;
     },
+    /** Sends to the newest open socket: a verification's socket closes once it said hello. */
     send(value: unknown) {
-      clients.at(-1)?.send(JSON.stringify(value));
+      clients.findLast((client) => client.readyState === client.OPEN)?.send(JSON.stringify(value));
     },
     terminateCurrent() {
       clients.at(-1)?.terminate();

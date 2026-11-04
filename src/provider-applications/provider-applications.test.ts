@@ -6,12 +6,15 @@ import {
   activateProviderApplicationsAtStartup,
   createProviderApplications,
   providerApplicationReturnRoute,
+  type ConnectedProviderIdentity,
   type ProviderApplicationConfiguration,
   type ProviderApplicationIdentity,
   type Provider,
   type ProviderApplicationStore,
+  type ProviderApplicationView,
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
+  type SlackApplicationDelivery,
 } from "./index.js";
 
 const githubConfiguration: ProviderApplicationConfiguration = {
@@ -23,14 +26,14 @@ const githubConfiguration: ProviderApplicationConfiguration = {
   privateKey: "private-key",
   webhookSecret: "webhook-secret",
 };
-const slackConfiguration: ProviderApplicationConfiguration = {
+const slackConfiguration = {
   provider: "slack",
   transport: "webhook",
   appId: "A1",
   clientId: "client",
   clientSecret: "client-secret",
   signingSecret: "signing-secret",
-};
+} satisfies ProviderApplicationConfiguration;
 const linearConfiguration: ProviderApplicationConfiguration = {
   provider: "linear",
   clientId: "linear-client",
@@ -323,7 +326,7 @@ describe("provider applications", () => {
       provider: "slack",
       url: "https://slack.test/install",
     });
-    assert.equal(fixture.store.values.has("slack"), false);
+    assert.equal(fixture.store.values.has("slack:A1"), false);
     assert.equal(fixture.runtime.active("slack"), undefined);
 
     await fixture.runtime.completeSlack({
@@ -342,7 +345,7 @@ describe("provider applications", () => {
       binding: slackBinding(),
     });
 
-    assert.equal(fixture.store.values.get("slack")?.version, 1);
+    assert.equal(fixture.store.values.get("slack:A1")?.version, 1);
     assert.notEqual(fixture.runtime.active("slack"), undefined);
   });
 
@@ -432,7 +435,7 @@ describe("provider applications", () => {
       identity: { provider: "slack", id: "A1", name: "A1" },
       configurationVersion: 1,
     });
-    assert.deepEqual(fixture.store.values.get("slack")?.configuration, {
+    assert.deepEqual(fixture.store.values.get("slack:A1")?.configuration, {
       provider: "slack",
       transport: "socket",
       appId: "A1",
@@ -464,7 +467,7 @@ describe("provider applications", () => {
         binding: slackBinding(),
       }),
     );
-    assert.equal(fixture.store.values.has("slack"), false);
+    assert.equal(fixture.store.values.has("slack:A1"), false);
     assert.equal(fixture.runtime.active("slack"), undefined);
   });
 
@@ -510,7 +513,7 @@ describe("provider applications", () => {
       }),
     );
 
-    assert.equal(fixture.store.values.get("slack")?.configuration, oldConfiguration);
+    assert.equal(fixture.store.values.get("slack:A1")?.configuration, oldConfiguration);
     assert.equal(fixture.runtime.active("slack"), oldRuntime);
     assert.equal(fixture.runtime.latestCandidate("slack")?.closeCount, 1);
   });
@@ -559,6 +562,488 @@ describe("provider applications", () => {
   });
 });
 
+describe("several Slack apps", () => {
+  it("adds and activates a second app beside a connected one without touching the first", async () => {
+    const fixture = createFixture({ connections: { slack: [slackConnection("A1")] } });
+    await saveSlack(fixture, "A1");
+    assert.deepEqual(await startUp(fixture), []);
+    const first = fixture.runtime.active("slack", "A1");
+    fixture.socketApps.set("xapp-b", "B1");
+
+    const result = await fixture.applications.configureSlackSocket(request("POST"), {
+      appToken: "xapp-b",
+      botToken: "xoxb-b",
+    });
+
+    assert.deepEqual(result.identity, { provider: "slack", id: "B1", name: "B1" });
+    assert.equal(result.configurationVersion, 1);
+    assert.equal(fixture.store.values.get("slack:A1")?.version, 1);
+    assert.equal(fixture.store.values.get("slack:A1")?.configuration, slackConfiguration);
+    assert.equal(fixture.runtime.active("slack", "A1"), first);
+    assert.equal(fixture.runtime.active("slack", "B1")?.configurationId, "B1");
+    assert.deepEqual(fixture.store.activations, [
+      { provider: "slack", applicationId: "A1", version: 1 },
+    ]);
+  });
+
+  it("installs a second webhook app beside a connected one without an identity conflict", async () => {
+    const fixture = createFixture({ connections: { slack: [slackConnection("A1")] } });
+    await saveSlack(fixture, "A1");
+    await startUp(fixture);
+    const first = fixture.runtime.active("slack", "A1");
+    const second = { ...slackConfiguration, appId: "B1", clientId: "client-b" };
+
+    assert.equal(
+      (await fixture.applications.verifyAndSave(request("POST"), "slack", second)).status,
+      "continuing",
+    );
+    await fixture.runtime.completeSlack({
+      configuration: second,
+      expectedConfigurationVersion: undefined,
+      callbackOrigin: "https://hub.test",
+      userId: "operator",
+      installation: { ...slackInstallation(), appId: "B1", botUserId: "UBOT-B" },
+      binding: slackBinding("B1"),
+    });
+
+    assert.equal(fixture.store.values.get("slack:B1")?.version, 1);
+    assert.equal(fixture.store.values.get("slack:A1")?.version, 1);
+    assert.equal(fixture.runtime.active("slack", "A1"), first);
+    assert.equal(fixture.runtime.active("slack", "B1")?.configurationId, "B1");
+  });
+
+  it("changes only the app it names, with that app's version", async () => {
+    const fixture = createFixture();
+    await saveSlack(fixture, "A1");
+    await saveSlack(fixture, "B1");
+
+    await assert.rejects(
+      fixture.applications.verifyAndSave(
+        request("POST"),
+        "slack",
+        { ...slackConfiguration, appId: "B1", expectedVersion: 1 },
+        undefined,
+        "A1",
+      ),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError && error.code === "invalidInput",
+    );
+    // A save that names no app adds one, so it cannot land on an app that is already saved.
+    await assert.rejects(
+      fixture.applications.verifyAndSave(request("POST"), "slack", {
+        ...slackConfiguration,
+        appId: "B1",
+      }),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError && error.code === "configurationConflict",
+    );
+    fixture.socketApps.set("xapp-b", "B1");
+    await assert.rejects(
+      fixture.applications.configureSlackSocket(request("POST"), {
+        appToken: "xapp-b",
+        botToken: "xoxb-b",
+        expectedVersion: 1,
+        applicationId: "A1",
+      }),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError &&
+        error.code === "credentialsRejected" &&
+        error.safeContext === "applicationMismatch",
+    );
+    assert.equal(fixture.runtime.prepareCount("slack"), 0);
+
+    const changed = await fixture.applications.verifyAndSave(
+      request("POST"),
+      "slack",
+      { ...slackConfiguration, appId: "B1", expectedVersion: 1 },
+      undefined,
+      "B1",
+    );
+    assert.equal(changed.status, "continuing");
+    assert.deepEqual(fixture.runtime.preparedConfigurationIds("slack"), ["B1"]);
+    assert.deepEqual(fixture.runtime.preparedVersions("slack"), [2]);
+  });
+
+  it("queues each Slack app's saves on their own", async () => {
+    const fixture = createFixture();
+    fixture.runtime.block("slack:A1");
+    fixture.socketApps.set("xapp-b", "B1");
+    const first = fixture.applications.configureSlackSocket(request("POST"), {
+      appToken: "xapp-a",
+      botToken: "xoxb-a",
+    });
+    await fixture.runtime.waitUntilPrepared("slack");
+
+    await fixture.applications.configureSlackSocket(request("POST"), {
+      appToken: "xapp-b",
+      botToken: "xoxb-b",
+    });
+
+    assert.equal(fixture.runtime.active("slack", "B1")?.configurationId, "B1");
+    assert.equal(fixture.runtime.active("slack", "A1"), undefined);
+    fixture.runtime.release("slack", "A1");
+    await first;
+    assert.equal(fixture.runtime.active("slack", "A1")?.configurationId, "A1");
+  });
+
+  it("lists every Slack app with its own connections, version and delivery", async () => {
+    const fixture = createFixture({
+      // Each app's evidence is under its own id and version; a lookup that mixes them up shows it.
+      eventEvidence: { "A1:1": "2026-08-14T10:00:00.000Z", "B1:2": "2026-08-15T10:00:00.000Z" },
+      connections: { slack: [slackConnection("A1"), slackConnection("B1")] },
+      deliveries: [delivery("B1", { state: "connected" })],
+    });
+    await saveSlack(fixture, "A1");
+    await saveSlack(fixture, "B1");
+    await saveSlack(fixture, "B1", 1);
+
+    const views = (await fixture.applications.overview(request())).providers.slack;
+
+    assert.deepEqual(views.map(slackViewSummary), [
+      {
+        app: "A1",
+        status: "connected",
+        version: 1,
+        connections: ["connection-A1"],
+        lastEventAt: "2026-08-14T10:00:00.000Z",
+        delivery: "stopped",
+      },
+      {
+        app: "B1",
+        status: "connected",
+        version: 2,
+        connections: ["connection-B1"],
+        lastEventAt: "2026-08-15T10:00:00.000Z",
+        delivery: "connected",
+      },
+    ]);
+  });
+
+  it("gives a connection with no app to the only Slack app, and to none of several", async () => {
+    const legacy = { ...slackConnection("A1"), id: "legacy", applicationId: null };
+    const one = createFixture({ connections: { slack: [legacy] } });
+    await saveSlack(one, "A1");
+    const several = createFixture({ connections: { slack: [legacy, slackConnection("B1")] } });
+    await saveSlack(several, "A1");
+    await saveSlack(several, "B1");
+
+    assert.deepEqual(await slackConnectionIds(one), [["legacy"]]);
+    assert.deepEqual(await slackConnectionIds(several), [[], ["connection-B1"]]);
+  });
+
+  it("starts every stored Slack app, each with its own connection", async () => {
+    const fixture = createFixture();
+    await saveSlack(fixture, "A1");
+    await saveSlack(fixture, "B1");
+
+    const failures = await activateProviderApplicationsAtStartup({
+      store: fixture.store,
+      environment: {},
+      runtime: fixture.runtime,
+      verifier: { verify: () => Promise.reject(new Error("unused")) },
+      inventory: {
+        ...connectedInventory("unused"),
+        connectedIdentities: (provider: Provider) =>
+          Promise.resolve(
+            provider === "slack" ? [slackConnection("A1"), slackConnection("B1")] : [],
+          ),
+      },
+      callbackOrigin: "https://hub.test",
+    });
+
+    assert.deepEqual(failures, []);
+    assert.equal(fixture.runtime.active("slack", "A1")?.configurationId, "A1");
+    assert.equal(fixture.runtime.active("slack", "B1")?.configurationId, "B1");
+    assert.deepEqual(fixture.store.activations, [
+      { provider: "slack", applicationId: "A1", version: 1 },
+      { provider: "slack", applicationId: "B1", version: 1 },
+    ]);
+  });
+
+  it("asks which app to connect or retry once there are several", async () => {
+    const retried: string[] = [];
+    const fixture = createFixture({
+      deliveries: [
+        delivery("A1", { state: "connected" }, retried),
+        delivery("B1", { state: "connected" }, retried),
+      ],
+    });
+    await saveSlack(fixture, "A1");
+    await saveSlack(fixture, "B1");
+    const required = (error: unknown) =>
+      error instanceof ProviderApplicationError && error.code === "slackApplicationRequired";
+
+    await assert.rejects(
+      fixture.applications.beginConnection(request("POST"), "slack", "org"),
+      required,
+    );
+    await assert.rejects(fixture.applications.retrySlackSocket(request("POST")), required);
+    await fixture.applications.beginConnection(request("POST"), "slack", "org", "apps", "B1");
+    await fixture.applications.retrySlackSocket(request("POST"), "B1");
+
+    assert.deepEqual(fixture.runtime.preparedConfigurationIds("slack"), ["B1"]);
+    assert.deepEqual(retried, ["B1"]);
+  });
+
+  it("connects and retries the only Slack app without naming it", async () => {
+    const retried: string[] = [];
+    const fixture = createFixture({
+      deliveries: [delivery("A1", { state: "connected" }, retried)],
+    });
+    await saveSlack(fixture, "A1");
+
+    await fixture.applications.beginConnection(request("POST"), "slack", "org");
+    await fixture.applications.retrySlackSocket(request("POST"));
+
+    assert.deepEqual(fixture.runtime.preparedConfigurationIds("slack"), ["A1"]);
+    assert.deepEqual(retried, ["A1"]);
+  });
+
+  it("keeps an environment-managed Slack app as the only Slack app", async () => {
+    const retried: string[] = [];
+    const environment: ProviderApplicationConfiguration = {
+      provider: "slack",
+      transport: "socket",
+      appId: "E1",
+      appToken: "xapp-environment",
+    };
+    const fixture = createFixture({
+      environment: { slack: environment },
+      deliveries: [delivery("E1", { state: "connected" }, retried)],
+    });
+    // A Slack app saved before the environment took over is ignored, not shown beside it.
+    await saveSlack(fixture, "B1");
+    assert.deepEqual(
+      await activateProviderApplicationsAtStartup({
+        store: fixture.store,
+        environment: { slack: environment },
+        runtime: fixture.runtime,
+        verifier: { verify: () => Promise.reject(new Error("unused")) },
+        inventory: connectedInventory("unused"),
+        callbackOrigin: "https://hub.test",
+      }),
+      [],
+    );
+    const managed = (error: unknown) =>
+      error instanceof ProviderApplicationError && error.code === "managedByEnvironment";
+
+    await assert.rejects(
+      fixture.applications.verifyAndSave(request("POST"), "slack", slackConfiguration),
+      managed,
+    );
+    await assert.rejects(
+      fixture.applications.verifyAndSave(
+        request("POST"),
+        "slack",
+        { ...slackConfiguration, appId: "E1" },
+        undefined,
+        "E1",
+      ),
+      managed,
+    );
+    await assert.rejects(
+      fixture.applications.configureSlackSocket(request("POST"), {
+        appToken: "xapp-new",
+        botToken: "xoxb-new",
+      }),
+      managed,
+    );
+    const views = (await fixture.applications.overview(request())).providers.slack;
+    assert.deepEqual(
+      views.map((view) => [view.status, view.identifiers["appId"], view.configurationVersion]),
+      [["managedByEnvironment", "E1", 0]],
+    );
+
+    // An install of another app begun before the environment took over cannot finish beside E1.
+    await assert.rejects(
+      fixture.runtime.completeSlack({
+        configuration: { ...slackConfiguration, appId: "B1", clientId: "client-b" },
+        expectedConfigurationVersion: undefined,
+        callbackOrigin: "https://hub.test",
+        userId: "operator",
+        installation: { ...slackInstallation(), appId: "B1", botUserId: "UBOT-B" },
+        binding: slackBinding("B1"),
+      }),
+      managed,
+    );
+    assert.equal(fixture.store.values.has("slack:E1"), false);
+    assert.equal(fixture.runtime.active("slack", "B1"), undefined);
+
+    await fixture.applications.beginConnection(request("POST"), "slack", "org");
+    await fixture.applications.retrySlackSocket(request("POST"));
+    assert.deepEqual(fixture.runtime.preparedConfigurationIds("slack"), ["E1", "E1"]);
+    assert.deepEqual(fixture.runtime.preparedVersions("slack"), [0, 0]);
+    assert.deepEqual(retried, ["E1"]);
+    await assert.rejects(
+      fixture.applications.beginConnection(request("POST"), "slack", "org", "apps", "B1"),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError && error.code === "invalidInput",
+    );
+  });
+
+  it("claims legacy connections for an environment-managed app only when no app owns any", async () => {
+    const legacy = { ...slackConnection("E1"), id: "legacy", applicationId: null };
+
+    assert.deepEqual(await startEnvironmentSlack([legacy]), {
+      codes: [],
+      claims: ["E1"],
+      active: true,
+    });
+    // Another app's row beside a legacy one: refused before anything is written.
+    assert.deepEqual(await startEnvironmentSlack([legacy, slackConnection("B1")]), {
+      codes: ["identityConflict"],
+      claims: [],
+      active: false,
+    });
+    // Another app's rows alone are that app's: the environment app starts beside them.
+    assert.deepEqual(await startEnvironmentSlack([slackConnection("B1")]), {
+      codes: [],
+      claims: [],
+      active: true,
+    });
+  });
+
+  it("still refuses a second GitHub app", async () => {
+    const fixture = createFixture();
+    const otherApp: ProviderApplicationConfiguration = {
+      provider: "github",
+      appId: "99",
+      appSlug: "other",
+      clientId: "client-99",
+      clientSecret: "client-secret",
+      privateKey: "private-key",
+    };
+    await fixture.applications.verifyAndSave(request("POST"), "github", githubConfiguration);
+    fixture.verificationIdentity = {
+      provider: "github",
+      id: "99",
+      name: "Other App",
+      ownerLogin: "acme",
+    };
+
+    await assert.rejects(
+      fixture.applications.verifyAndSave(request("POST"), "github", otherApp),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError && error.code === "configurationConflict",
+    );
+    await assert.rejects(
+      fixture.applications.verifyAndSave(request("POST"), "github", otherApp, undefined, "99"),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError && error.code === "invalidInput",
+    );
+    assert.deepEqual(
+      (await fixture.store.list("github")).map((value) => value.identity.id),
+      ["42"],
+    );
+  });
+});
+
+async function saveSlack(
+  fixture: ReturnType<typeof createFixture>,
+  applicationId: string,
+  expectedVersion?: number,
+) {
+  await fixture.store.save({
+    provider: "slack",
+    configuration:
+      applicationId === "A1" ? slackConfiguration : { ...slackConfiguration, appId: applicationId },
+    identity: { provider: "slack", id: applicationId, name: applicationId },
+    expectedVersion,
+    updatedByUserId: "operator",
+  });
+}
+
+function startUp(fixture: ReturnType<typeof createFixture>) {
+  return activateProviderApplicationsAtStartup({
+    store: fixture.store,
+    environment: {},
+    runtime: fixture.runtime,
+    verifier: { verify: () => Promise.reject(new Error("unused")) },
+    inventory: {
+      ...connectedInventory("unused"),
+      connectedIdentities: (provider: Provider) =>
+        Promise.resolve(provider === "slack" ? [slackConnection("A1")] : []),
+    },
+    callbackOrigin: "https://hub.test",
+  });
+}
+
+async function slackConnectionIds(fixture: ReturnType<typeof createFixture>) {
+  const views = (await fixture.applications.overview(request())).providers.slack;
+  return views.map((view) => view.connections.map((connection) => connection.id));
+}
+
+/** Starts env-managed Slack app E1 over the given connections, recording every legacy claim. */
+async function startEnvironmentSlack(connections: ConnectedProviderIdentity[]) {
+  const fixture = createFixture();
+  const claims: string[] = [];
+  const failures = await activateProviderApplicationsAtStartup({
+    store: fixture.store,
+    environment: {
+      slack: { provider: "slack", transport: "socket", appId: "E1", appToken: "xapp-environment" },
+    },
+    runtime: fixture.runtime,
+    verifier: { verify: () => Promise.reject(new Error("unused")) },
+    inventory: {
+      ...connectedInventory("unused"),
+      connectedIdentities: () => Promise.resolve(connections),
+      claimLegacyConnections: (_provider: Provider, identity: ProviderApplicationIdentity) => {
+        claims.push(identity.id);
+        return Promise.resolve(true);
+      },
+    },
+    callbackOrigin: "https://hub.test",
+  });
+  return {
+    codes: failures.map((failure) =>
+      failure.error instanceof ProviderApplicationError ? failure.error.code : "other",
+    ),
+    claims,
+    active: fixture.runtime.active("slack", "E1") !== undefined,
+  };
+}
+
+function slackViewSummary(view: ProviderApplicationView) {
+  return {
+    app: view.identity?.id,
+    status: view.status,
+    version: view.configurationVersion,
+    connections: view.connections.map((connection) => connection.id),
+    lastEventAt: view.lastEventAt,
+    delivery: view.deliveryStatus?.state,
+  };
+}
+
+function slackConnection(applicationId: string): ConnectedProviderIdentity {
+  return { id: `connection-${applicationId}`, name: "Acme", applicationId, status: "connected" };
+}
+
+function slackInstallation() {
+  return {
+    appId: "A1",
+    teamId: "T1",
+    teamName: "Acme",
+    botUserId: "UBOT",
+    botAccessToken: "token",
+    scopes: ["chat:write"],
+  };
+}
+
+function delivery(
+  applicationId: string,
+  status: ReturnType<SlackApplicationDelivery["status"]>,
+  retried: string[] = [],
+): SlackApplicationDelivery {
+  return {
+    applicationId,
+    status: () => status,
+    retry: () => {
+      retried.push(applicationId);
+      return Promise.resolve();
+    },
+  };
+}
+
 function request(method = "GET", origin = "https://hub.test") {
   return new Request(`${origin}/apps`, {
     method,
@@ -578,11 +1063,18 @@ function createFixture(
     environment?: Partial<Record<Provider, ProviderApplicationConfiguration>>;
     rejectMutation?: boolean;
     eventEvidenceVersion?: number;
+    /** Signed-event times by `<app id>:<configuration version>`; replaces `eventEvidenceVersion`. */
+    eventEvidence?: Record<string, string>;
+    /** Replaces the default connections of the providers it names. */
+    connections?: Partial<Record<Provider, ConnectedProviderIdentity[]>>;
+    deliveries?: SlackApplicationDelivery[];
   } = {},
 ) {
   const store = new MemoryStore();
   const runtime = new BlockingRuntime();
   const returnRoutes: string[] = [];
+  /** The Slack app each Socket Mode app token belongs to; any other token is app A1's. */
+  const socketApps = new Map<string, string>();
   let verificationIdentity: ProviderApplicationIdentity = {
     provider: "github",
     id: "42",
@@ -607,9 +1099,9 @@ function createFixture(
       verify: (provider) => Promise.resolve(identityFor(provider, verificationIdentity)),
     },
     slackSocketVerifier: {
-      verify: (_appToken, botToken) =>
+      verify: (appToken, botToken) =>
         Promise.resolve({
-          appId: "A1",
+          appId: socketApps.get(appToken) ?? "A1",
           teamId: "T1",
           teamName: "Acme",
           botId: "B1",
@@ -618,25 +1110,32 @@ function createFixture(
           scopes: ["app_mentions:read", "chat:write"],
         }),
     },
+    ...(options.deliveries === undefined ? {} : { slackDeliveries: () => options.deliveries! }),
     inventory: {
       connectedIdentities: (provider) =>
         Promise.resolve(
-          options.connected && provider === "github"
-            ? [
-                {
-                  id: "connection",
-                  name: "acme",
-                  applicationId: "42",
-                  status: options.connectionStatus ?? "connected",
-                },
-              ]
-            : [],
+          options.connections?.[provider] ??
+            (options.connected && provider === "github"
+              ? [
+                  {
+                    id: "connection",
+                    name: "acme",
+                    applicationId: "42",
+                    status: options.connectionStatus ?? "connected",
+                  },
+                ]
+              : []),
         ),
       claimLegacyConnections: () => Promise.resolve(true),
-      lastEventAt: (_provider, _identity?: ProviderApplicationIdentity, version?: number) =>
-        Promise.resolve(
+      lastEventAt: (_provider, identity?: ProviderApplicationIdentity, version?: number) => {
+        if (options.eventEvidence !== undefined) {
+          const at = options.eventEvidence[`${identity?.id}:${version}`];
+          return Promise.resolve(at === undefined ? null : new Date(at));
+        }
+        return Promise.resolve(
           version === options.eventEvidenceVersion ? new Date("2026-08-14T10:00:00Z") : null,
-        ),
+        );
+      },
     },
     callbackOrigin: (incoming) =>
       Promise.resolve(incoming.headers.get("x-paseo-trusted-request-origin")!),
@@ -650,6 +1149,7 @@ function createFixture(
     store,
     runtime,
     returnRoutes,
+    socketApps,
     get verificationIdentity() {
       return verificationIdentity;
     },
@@ -689,8 +1189,14 @@ function connectedInventory(applicationId: string) {
   };
 }
 
+/** Slack rows are keyed `slack:<app id>`, as Slack runs several apps; the others by provider. */
+function storeKey(provider: Provider, applicationId: string): string {
+  return provider === "slack" ? `slack:${applicationId}` : provider;
+}
+
 class MemoryStore implements ProviderApplicationStore {
   readonly values = new Map<string, Awaited<ReturnType<ProviderApplicationStore["read"]>> & {}>();
+  readonly activations: { provider: Provider; applicationId: string; version: number }[] = [];
   reads = 0;
   private failSlackCompletion = false;
   socketOrganizationId: string | undefined;
@@ -699,9 +1205,14 @@ class MemoryStore implements ProviderApplicationStore {
     this.failSlackCompletion = true;
   }
 
-  read(provider: Provider) {
+  read(provider: Provider, applicationId?: string) {
     this.reads += 1;
-    return Promise.resolve(this.values.get(provider));
+    if (applicationId !== undefined) {
+      return Promise.resolve(this.values.get(storeKey(provider, applicationId)));
+    }
+    const stored = this.own(provider);
+    if (stored.length > 1) return Promise.reject(new Error(`several ${provider} apps are stored`));
+    return Promise.resolve(stored[0]);
   }
 
   readAll() {
@@ -709,8 +1220,18 @@ class MemoryStore implements ProviderApplicationStore {
     return Promise.resolve([...this.values.values()].filter((value) => value !== undefined));
   }
 
+  list(provider: Provider) {
+    this.reads += 1;
+    return Promise.resolve(this.own(provider));
+  }
+
+  private own(provider: Provider) {
+    return [...this.values.values()].filter((value) => value.provider === provider);
+  }
+
   save(input: Parameters<ProviderApplicationStore["save"]>[0]) {
-    const previous = this.values.get(input.provider);
+    const key = storeKey(input.provider, input.identity.id);
+    const previous = this.values.get(key);
     if (previous?.version !== input.expectedVersion) {
       const error = new Error("changed");
       error.name = "ProviderConfigurationConflictError";
@@ -722,11 +1243,16 @@ class MemoryStore implements ProviderApplicationStore {
       verifiedAt: new Date(),
       updatedAt: new Date(),
     };
-    this.values.set(input.provider, value);
+    this.values.set(key, value);
     return Promise.resolve(value);
   }
 
-  activate(_input: Parameters<ProviderApplicationStore["activate"]>[0]) {
+  activate(input: Parameters<ProviderApplicationStore["activate"]>[0]) {
+    this.activations.push({
+      provider: input.provider,
+      applicationId: input.identity.id,
+      version: input.configurationVersion,
+    });
     return Promise.resolve();
   }
 
@@ -815,7 +1341,7 @@ class BlockingRuntime implements ProviderRuntimeOwner {
     provider: Provider,
     configuration: ProviderApplicationConfiguration,
     _callbackOrigin: string,
-    _identity: ProviderApplicationIdentity,
+    identity: ProviderApplicationIdentity,
     configurationVersion: number,
   ): Promise<ProviderRuntimeCandidate> {
     const candidate = new Candidate(
@@ -823,6 +1349,7 @@ class BlockingRuntime implements ProviderRuntimeOwner {
       this,
       candidateConfigurationId(configuration),
       configurationVersion,
+      identity,
     );
     const candidates = this.candidates.get(provider) ?? [];
     candidates.push(candidate);
@@ -834,8 +1361,15 @@ class BlockingRuntime implements ProviderRuntimeOwner {
     return this.candidates.get(provider)?.length ?? 0;
   }
 
-  active(provider: string) {
-    return this.activeCandidates.get(provider);
+  /** The live candidate of one app; without an app id, the provider's first. */
+  active(provider: string, applicationId?: string) {
+    if (applicationId !== undefined)
+      return this.activeCandidates.get(`${provider}:${applicationId}`);
+    return [...this.activeCandidates.values()].find((candidate) => candidate.provider === provider);
+  }
+
+  identity(provider: Provider, applicationId?: string) {
+    return this.active(provider, applicationId)?.identity;
   }
 
   latestCandidate(provider: string) {
@@ -866,8 +1400,9 @@ class BlockingRuntime implements ProviderRuntimeOwner {
     this.blocked.add(provider);
   }
 
-  shouldBlock(provider: string) {
-    return this.blocked.has(provider);
+  /** Blocks every app of a provider, or one app named `<provider>:<app id>`. */
+  shouldBlock(provider: string, configurationId: string) {
+    return this.blocked.has(provider) || this.blocked.has(`${provider}:${configurationId}`);
   }
 
   shouldFail(provider: string) {
@@ -875,11 +1410,16 @@ class BlockingRuntime implements ProviderRuntimeOwner {
   }
 
   publish(candidate: Candidate) {
-    this.activeCandidates.set(candidate.provider, candidate);
+    this.activeCandidates.set(`${candidate.provider}:${candidate.configurationId}`, candidate);
   }
 
-  release(provider: string) {
-    this.candidates.get(provider)?.at(-1)?.release();
+  release(provider: string, applicationId?: string) {
+    this.candidates
+      .get(provider)
+      ?.findLast(
+        (candidate) => applicationId === undefined || candidate.configurationId === applicationId,
+      )
+      ?.release();
   }
 
   async waitUntilPrepared(provider: string, count = 1) {
@@ -899,6 +1439,7 @@ class Candidate implements ProviderRuntimeCandidate {
     private readonly owner: BlockingRuntime,
     readonly configurationId: string,
     readonly configurationVersion: number,
+    readonly identity: ProviderApplicationIdentity,
   ) {
     if (!owner.connectionUnavailable(provider)) {
       this.beginConnection = () => Promise.resolve({ url: "https://slack.test/install" });
@@ -907,7 +1448,7 @@ class Candidate implements ProviderRuntimeCandidate {
 
   async start() {
     if (this.owner.shouldFail(this.provider)) throw new Error("candidate failed");
-    if (!this.owner.shouldBlock(this.provider)) return;
+    if (!this.owner.shouldBlock(this.provider, this.configurationId)) return;
     await new Promise<void>((resolve) => {
       if (this.released) {
         resolve();
@@ -940,9 +1481,9 @@ function candidateConfigurationId(configuration: ProviderApplicationConfiguratio
   return configuration.applicationId;
 }
 
-function slackBinding() {
+function slackBinding(applicationId = "A1") {
   return {
-    providerApplicationId: "A1",
+    providerApplicationId: applicationId,
     stateVerifier: "state",
     phase: "slack_authorization" as const,
     access: { sessionId: "session", userId: "operator" },

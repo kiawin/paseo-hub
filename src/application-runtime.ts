@@ -45,8 +45,8 @@ export interface ApplicationCompositionOptions {
   completionTokenSecret?: string;
   testTriggerRoutes?: boolean;
   daemonConnectionForId?: DaemonDispatchLifecycleOptions["connectionForDaemon"];
-  /** The running Slack source's intake health; undefined when Slack is not running. */
-  slackIntakeHealth?: () => SlackIntakeHealth | undefined;
+  /** Each running Slack app's intake health, in app order; empty when no Slack app runs. */
+  slackIntakeHealth?: () => readonly SlackIntakeHealth[];
   close(): Promise<void>;
 }
 
@@ -145,7 +145,7 @@ async function createOwnedApplicationRuntime(
     homeDashboard: homeDashboardFor(options, connections),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
-    slackIntakeHealth: () => options.slackIntakeHealth?.(),
+    slackIntakeHealth: () => options.slackIntakeHealth?.() ?? [],
     auth: (request) => {
       if (options.database === null) {
         return Promise.resolve(Response.json({ error: "database_unavailable" }, { status: 503 }));

@@ -1579,7 +1579,7 @@ export class HubE2E {
          (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
        values ('00000000-0000-4000-8000-0000000000c1', 'hub-e2e', 'paseo', 'paseo',
                'Paseo', 'UBOT', 'xoxb-test', '["app_mentions:read", "chat:write"]'::jsonb)
-       on conflict (team_id) do nothing`,
+       on conflict (id) do nothing`,
     );
     await this.requirePool().query(
       `insert into discord_connections

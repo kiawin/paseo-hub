@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
@@ -12,6 +13,8 @@ import type {
   SlackProviderApplicationConfiguration,
 } from "../index.js";
 import { DynamicProviderRuntime } from "./runtime-owner.js";
+import { slackHealthReport } from "../../server/slack-health.js";
+import type { SlackIntakeHealth } from "../../triggers/slack/source/index.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
 
@@ -166,7 +169,7 @@ describe("dynamic provider runtime", () => {
       "slack",
       slackConfiguration("A2"),
       "https://hub.test",
-      { provider: "slack", id: "A2", name: "A2" },
+      { provider: "slack", id: "A1", name: "A1" },
       2,
     );
     await second.start();
@@ -236,7 +239,7 @@ describe("dynamic provider runtime", () => {
       "slack",
       slackConfiguration("A2"),
       "https://hub.test",
-      { provider: "slack", id: "A2", name: "A2" },
+      { provider: "slack", id: "A1", name: "A1" },
       2,
     );
     await second.start();
@@ -251,9 +254,30 @@ describe("dynamic provider runtime", () => {
     await stable.attachment!.resolve({
       organizationId: "org",
       connectionId: "connection",
-      locator: {},
+      locator: { applicationId: "A1" },
       executionId: "execution-1",
     });
+    // A context or locator that names no app has no app to go to, even with only one running.
+    await assert.rejects(
+      async () =>
+        stable.outputs[0]!.execute({
+          agentExecutionId: "execution-1",
+          toolType: "slack.reply",
+          args: { content: "reply" },
+          outputContext: {},
+        }),
+      /slack application required/u,
+    );
+    await assert.rejects(
+      async () =>
+        stable.attachment!.resolve({
+          organizationId: "org",
+          connectionId: "connection",
+          locator: {},
+          executionId: "execution-1",
+        }),
+      /slack application required/u,
+    );
 
     assert.deepEqual(used, ["launch:A1", "reply:A2", "attachment:A2"]);
     assert.deepEqual(stopped, ["A1"]);
@@ -428,6 +452,469 @@ describe("dynamic provider runtime", () => {
     assert.deepEqual(stopped, ["A1"]);
   });
 
+  it("runs several Slack apps side by side and replaces only the app that changes", async () => {
+    const log: string[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration, configurationVersion }) =>
+        slackAppRegistration(`${configurationId(configuration)}@${configurationVersion}`, log),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    const publish = async (appId: string, version: number) => {
+      const candidate = await runtime.prepare(
+        "slack",
+        slackConfiguration(appId),
+        "https://hub.test",
+        { provider: "slack", id: appId, name: appId },
+        version,
+      );
+      await candidate.start();
+      candidate.publish();
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    await publish("A1", 1);
+    stable.triggerProviders[0]!({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      connectionsForProject: () => {
+        throw new Error("unused");
+      },
+    });
+    // App B arrives after startup handed out trigger resources, and still gets them.
+    await publish("B1", 1);
+    assert.deepEqual(log, ["start:A1@1", "triggers:A1@1", "triggers:B1@1", "start:B1@1"]);
+    assert.deepEqual(
+      runtime.slackDeliveries().map((delivery) => delivery.applicationId),
+      ["A1", "B1"],
+    );
+    assert.equal(runtime.identity("slack", "B1")?.id, "B1");
+    // Each app's delivery is that app's own: retrying B reaches B's registration only.
+    log.length = 0;
+    await runtime
+      .slackDeliveries()
+      .find((delivery) => delivery.applicationId === "B1")!
+      .retry();
+    assert.deepEqual(log, ["retry:B1@1"]);
+
+    // A new version of A retires A's old registration only.
+    log.length = 0;
+    await publish("A1", 2);
+    assert.deepEqual(log, ["triggers:A1@2", "start:A1@2", "stop:A1@1"]);
+    assert.deepEqual(
+      runtime.slackDeliveries().map((delivery) => delivery.applicationId),
+      ["A1", "B1"],
+    );
+
+    // Stopping the Slack source stops every app.
+    log.length = 0;
+    await stable.sources[0]!.stop();
+    assert.deepEqual(log.toSorted(), ["stop:A1@2", "stop:B1@1"]);
+  });
+
+  it("reports every Slack app's intake, so either app going down shows in its health", async () => {
+    const down = new Set<string>();
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) => {
+        const id = configurationId(configuration);
+        const registration = slackAppRegistration(id, []);
+        return {
+          ...registration,
+          slackDelivery: {
+            ...registration.slackDelivery!,
+            intake: () => socketIntake(down.has(id) ? "reconnecting" : "connected"),
+          },
+        };
+      },
+    });
+    for (const appId of ["A1", "B1"]) {
+      const candidate = await runtime.prepare(
+        "slack",
+        slackConfiguration(appId),
+        "https://hub.test",
+        { provider: "slack", id: appId, name: appId },
+        1,
+      );
+      candidate.publish();
+    }
+    const health = () => slackHealthReport(runtime.slackIntakes(), new Date());
+
+    assert.equal(health().status, 200);
+    assert.equal(health().body.apps.length, 2);
+    for (const appId of ["A1", "B1"]) {
+      down.clear();
+      down.add(appId);
+      assert.equal(health().status, 503, appId);
+      assert.equal(health().body.reason, "socket_down", appId);
+    }
+  });
+
+  it("dispatches each Slack call to the app it belongs to", async () => {
+    const used: string[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration, configurationVersion }) =>
+        slackDispatchRegistration(
+          `${configurationId(configuration)}@${configurationVersion}`,
+          used,
+          configurationVersion,
+        ),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    const trigger = stable.triggerProviders[0]!({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      connectionsForProject: () => {
+        throw new Error("unused");
+      },
+    })!;
+    const publish = async (appId: string, version: number) => {
+      const candidate = await runtime.prepare(
+        "slack",
+        slackConfiguration(appId),
+        "https://hub.test",
+        { provider: "slack", id: appId, name: appId },
+        version,
+      );
+      await candidate.start();
+      candidate.publish();
+    };
+    await publish("A1", 1);
+
+    // With one app, a connection starts without naming it.
+    const startOnly = await stable.connection.actions["start"]!(
+      new Request("https://hub.test/start", { method: "POST" }),
+    );
+    assert.deepEqual(await startOnly.json(), { url: "https://provider.test/A1@1" });
+
+    await publish("B1", 1);
+    const matches = await trigger.match({ ...externalTrigger(), payload: { appId: "B1" } });
+    if (typeof matches === "string") throw new Error("expected a match");
+    const { triggerContext, outputContext } = matches[0]!;
+    await trigger.materializeContext?.({
+      executionId: "execution-b",
+      organizationId: "org",
+      projectId: "project",
+      providerEventReceiptId: "receipt",
+      triggerContext,
+    });
+    await stable.outputs[0]!.execute({
+      agentExecutionId: "execution-b",
+      toolType: "slack.reply",
+      args: { content: "reply" },
+      outputContext,
+    });
+    await stable.attachment!.resolve({
+      organizationId: "org",
+      connectionId: "connection",
+      locator: { teamId: "T1", fileId: "F1", applicationId: "B1" },
+      executionId: "execution-b",
+    });
+
+    // A new version of A while B's run is in flight leaves B's run on B.
+    await publish("A1", 2);
+    await trigger.onAgentExecutionTerminal?.("execution-b", triggerContext);
+    assert.deepEqual(used, [
+      "match:B1@1",
+      "context:B1@1",
+      "reply:B1@1",
+      "attachment:B1@1",
+      "terminal:B1@1",
+    ]);
+
+    // A call for an app that is not running is refused.
+    await assert.rejects(
+      async () =>
+        stable.outputs[0]!.execute({
+          agentExecutionId: "execution-z",
+          toolType: "slack.reply",
+          args: { content: "reply" },
+          outputContext: { provider: "slack", applicationId: "Z9" },
+        }),
+      /provider not configured/u,
+    );
+
+    // With two apps, a connection names its app.
+    const startUnnamed = await stable.connection.actions["start"]!(
+      new Request("https://hub.test/start", { method: "POST" }),
+    );
+    assert.equal(startUnnamed.status, 409);
+    assert.deepEqual(await startUnnamed.json(), { error: "slack_application_required" });
+    const startB = await stable.connection.actions["start"]!(
+      new Request("https://hub.test/start?applicationId=B1", { method: "POST" }),
+    );
+    assert.deepEqual(await startB.json(), { url: "https://provider.test/B1@1" });
+    const startUnknown = await stable.connection.actions["start"]!(
+      new Request("https://hub.test/start?applicationId=Z9", { method: "POST" }),
+    );
+    assert.deepEqual(await startUnknown.json(), { error: "provider_not_configured" });
+  });
+
+  it("reports one Slack status for every app, the one most in need of attention", async () => {
+    const statuses: Record<string, string> = {
+      A1: "connected",
+      B1: "requiresReauthorization",
+      S1: "connected",
+    };
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) => {
+        const registration = slackDispatchRegistration(configurationId(configuration), []);
+        return {
+          ...registration,
+          connection: {
+            ...registration.connection,
+            status: () => ({ status: statuses[configurationId(configuration)] }),
+          },
+        };
+      },
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    const usage = { github: [], discord: [], slack: [], linear: [] };
+    assert.deepEqual(stable.connection.status(usage), {
+      status: "notConfigured",
+      applications: [],
+    });
+    for (const appId of ["A1", "B1", "S1"]) {
+      const candidate = await runtime.prepare(
+        "slack",
+        appId === "S1"
+          ? { provider: "slack", transport: "socket", appId, appToken: "xapp-test" }
+          : slackConfiguration(appId),
+        "https://hub.test",
+        { provider: "slack", id: appId, name: appId },
+        1,
+      );
+      candidate.publish();
+    }
+    // The webhook apps are the ones a project can install; the Socket Mode app is not offered.
+    assert.deepEqual(stable.connection.status(usage), {
+      status: "requiresReauthorization",
+      applications: ["A1", "B1"],
+    });
+  });
+
+  it("disconnects a Slack connection through the app it belongs to", async () => {
+    const used: string[] = [];
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    const orphanConnectionId = "33333333-3333-4333-8333-333333333333";
+    const legacyConnectionId = "44444444-4444-4444-8444-444444444444";
+    const connection = (id: string, teamId: string, providerApplicationId: string | null) => ({
+      id,
+      organizationId: "org",
+      slug: `slack-${teamId}`,
+      teamId,
+      teamName: "Acme",
+      botUserId: "U-B",
+      botAccessToken: "xoxb-b",
+      scopes: [],
+      providerApplicationId,
+    });
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase({
+        slackConnections: [
+          connection(connectionId, "T1", "B1"),
+          connection(orphanConnectionId, "T2", "GONE"),
+          connection(legacyConnectionId, "T3", null),
+        ],
+      }),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) =>
+        slackDispatchRegistration(configurationId(configuration), used),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    // A runs first, over Socket Mode, with no client to revoke B's token.
+    for (const appId of ["A1", "B1"]) {
+      const candidate = await runtime.prepare(
+        "slack",
+        slackConfiguration(appId),
+        "https://hub.test",
+        { provider: "slack", id: appId, name: appId },
+        1,
+      );
+      candidate.publish();
+    }
+
+    const disconnect = (id: string, query = "") =>
+      stable.connection.actions["disconnect"]!(
+        new Request(`https://hub.test/disconnect?connectionId=${id}${query}`, { method: "POST" }),
+      );
+    await disconnect(connectionId);
+    assert.deepEqual(used, ["disconnect:B1"]);
+    // Naming another app changes nothing: only the connection's own app can revoke its token.
+    await disconnect(connectionId, "&applicationId=A1");
+    assert.deepEqual(used, ["disconnect:B1", "disconnect:B1"]);
+
+    // A connection whose app is not running is refused rather than handed to another app.
+    const orphan = await disconnect(orphanConnectionId);
+    assert.equal(orphan.status, 409);
+    assert.deepEqual(await orphan.json(), { error: "provider_not_configured" });
+    // A connection from before apps were recorded needs the only app, and two are running.
+    const legacy = await disconnect(legacyConnectionId);
+    assert.deepEqual(await legacy.json(), { error: "slack_application_required" });
+    assert.deepEqual(used, ["disconnect:B1", "disconnect:B1"]);
+  });
+
+  it("hands a Slack events request to the webhook app whose signing secret verifies it", async () => {
+    const handled: string[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) => {
+        const id = configurationId(configuration);
+        const transport = configuration.provider === "slack" ? configuration.transport : "";
+        return {
+          ...slackAppRegistration(id, []),
+          // As in production, only a webhook app takes requests.
+          requests:
+            transport === "webhook"
+              ? [
+                  {
+                    name: "slack.events",
+                    handle: async (request) => {
+                      handled.push(`${id}:${await request.text()}`);
+                      return new Response("OK");
+                    },
+                  },
+                ]
+              : [],
+        };
+      },
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    const events = stable.requests.find((request) => request.name === "slack.events")!;
+    const publish = async (configuration: SlackProviderApplicationConfiguration) => {
+      const candidate = await runtime.prepare(
+        "slack",
+        configuration,
+        "https://hub.test",
+        { provider: "slack", id: configuration.appId, name: configuration.appId },
+        1,
+      );
+      candidate.publish();
+    };
+    const signed = (secret: string, body: string) => {
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const digest = createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex");
+      return new Request("https://hub.test/api/integrations/slack/events", {
+        method: "POST",
+        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": `v0=${digest}` },
+        body,
+      });
+    };
+
+    await publish({ provider: "slack", transport: "socket", appId: "S1", appToken: "xapp-s1" });
+    // Socket Mode apps take no requests, so with only one running there is nothing to route to.
+    assert.equal((await events.handle(signed("signing-A1", "{}"))).status, 404);
+    await publish(webhookConfiguration("A1", "signing-A1"));
+    await publish(webhookConfiguration("B1", "signing-B1"));
+
+    assert.equal((await events.handle(signed("signing-B1", '{"for":"B1"}'))).status, 200);
+    assert.equal((await events.handle(signed("signing-A1", '{"for":"A1"}'))).status, 200);
+    assert.equal((await events.handle(signed("signing-S1", '{"for":"S1"}'))).status, 401);
+    assert.deepEqual(handled, ['B1:{"for":"B1"}', 'A1:{"for":"A1"}']);
+  });
+
+  it("completes a callback with the app its attempt was started for", async () => {
+    const built: string[] = [];
+    const database = createMemoryDatabase();
+    const runtime = new DynamicProviderRuntime({
+      database,
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration, configurationVersion }) => {
+        const id = `${configurationId(configuration)}@${configurationVersion}`;
+        built.push(id);
+        return slackDispatchRegistration(id, [], configurationVersion);
+      },
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    const candidate = await runtime.prepare(
+      "slack",
+      slackConfiguration("A1"),
+      "https://hub.test",
+      { provider: "slack", id: "A1", name: "A1" },
+      1,
+    );
+    await candidate.start();
+    candidate.publish();
+    // App B's first install starts at version 1 on the same origin as A.
+    database.findConnectionAttemptConfiguration = () =>
+      Promise.resolve({
+        configurationVersion: 1,
+        callbackOrigin: "https://hub.test",
+        configurationSnapshot: slackConfiguration("B1"),
+        expectedConfigurationVersion: null,
+        activateConfiguration: true,
+        providerApplicationId: "B1",
+      });
+
+    const response = await stable.connection.actions["callback"]!(
+      new Request("https://hub.test/callback?state=state-b&code=code"),
+    );
+
+    assert.deepEqual(await response.json(), { completed: "B1@1" });
+    assert.deepEqual(built, ["A1@1", "B1@1"]);
+  });
+
+  it("keeps one app for every other provider", async () => {
+    const stopped: string[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) =>
+        fakeRegistration(providerConfigurationId(configuration), [], stopped, []),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "github")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    for (const id of ["one", "two"]) {
+      const candidate = await runtime.prepare(
+        "github",
+        providerConfiguration("github", id),
+        "https://hub.test",
+        providerIdentity("github", id),
+        1,
+      );
+      await candidate.start();
+      candidate.publish();
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(stopped, ["one"]);
+    assert.equal(runtime.identity("github", providerIdentity("github", "one").id), undefined);
+    assert.equal(runtime.identity("github")?.id, providerIdentity("github", "two").id);
+  });
+
   it("leaves the active registration untouched when a candidate cannot start", async () => {
     const runtime = new DynamicProviderRuntime({
       database: createMemoryDatabase(),
@@ -459,7 +946,7 @@ describe("dynamic provider runtime", () => {
       "slack",
       slackConfiguration("A2"),
       "https://hub.test",
-      { provider: "slack", id: "A2", name: "A2" },
+      { provider: "slack", id: "A1", name: "A1" },
       2,
     );
 
@@ -555,6 +1042,7 @@ describe("dynamic provider runtime", () => {
         configurationSnapshot: slackConfiguration("old"),
         expectedConfigurationVersion: null,
         activateConfiguration: false,
+        providerApplicationId: slackConfiguration("old").appId,
       });
     const runtime = new DynamicProviderRuntime({
       database,
@@ -626,7 +1114,7 @@ describe("dynamic provider runtime", () => {
       "slack",
       slackConfiguration("two"),
       "https://hub.test",
-      { provider: "slack", id: "two", name: "Two" },
+      { provider: "slack", id: "one", name: "One" },
       2,
     );
     await second.start();
@@ -708,6 +1196,43 @@ function slackConfiguration(appId: string): SlackProviderApplicationConfiguratio
   };
 }
 
+/** A Socket Mode intake whose state has held for an hour, so "reconnecting" counts as down. */
+function socketIntake(state: "connected" | "reconnecting"): SlackIntakeHealth {
+  return {
+    transport: "socket",
+    state,
+    stateChangedAt: new Date(Date.now() - 3_600_000),
+    queuedFrames: 0,
+    activePhase: null,
+    activePhaseStartedAt: null,
+    lastCompletedAt: null,
+    acceptTimeouts: 0,
+    ackTimeouts: 0,
+    dispatchTimeouts: 0,
+    lastAcceptOkAt: null,
+    lastAcceptTimeoutAt: null,
+    abandonedHandlers: 0,
+    oldestAbandonedStartedAt: null,
+    closedConnectionFrames: 0,
+    oldestClosedFrameStartedAt: null,
+    lastPongAt: null,
+  };
+}
+
+function webhookConfiguration(
+  appId: string,
+  signingSecret: string,
+): SlackProviderApplicationConfiguration {
+  return {
+    provider: "slack",
+    transport: "webhook",
+    appId,
+    clientId: "client",
+    clientSecret: "secret",
+    signingSecret,
+  };
+}
+
 function configurationId(configuration: ProviderApplicationConfiguration): string {
   if (configuration.provider !== "slack") throw new Error("expected Slack configuration");
   return configuration.appId;
@@ -727,8 +1252,9 @@ function fakeRegistration(
       Promise.resolve([
         {
           triggerName: "mention",
-          triggerContext: { id },
-          outputContext: { id },
+          // Every context names its app, as production's do; the replacement keeps the slot's app.
+          triggerContext: { id, applicationId: "A1" },
+          outputContext: { id, applicationId: "A1" },
           hubConfig: {},
           conversation: null,
           invocation: { status: "accepted", prompt: "", inputs: {} },
@@ -766,6 +1292,113 @@ function fakeRegistration(
   };
 }
 
+/** A Slack app's registration that logs its sources and trigger factories by app and version. */
+function slackAppRegistration(id: string, log: string[]): ProviderRegistration {
+  const registration = fakeRegistration(id, [], [], []);
+  return {
+    ...registration,
+    triggerProviders: [
+      (resources) => {
+        log.push(`triggers:${id}`);
+        return registration.triggerProviders[0]!(resources);
+      },
+    ],
+    sources: [
+      {
+        start: () => {
+          log.push(`start:${id}`);
+          return Promise.resolve();
+        },
+        stop: () => {
+          log.push(`stop:${id}`);
+          return Promise.resolve();
+        },
+      },
+    ],
+    slackDelivery: {
+      status: () => ({ state: "connected" }),
+      retry: () => {
+        log.push(`retry:${id}`);
+        return Promise.resolve();
+      },
+      intake: () => ({ transport: "webhook" }),
+    },
+  };
+}
+
+/** A Slack app's registration that records which app served each call. */
+function slackDispatchRegistration(
+  id: string,
+  used: string[],
+  configurationVersion = 1,
+): ProviderRegistration {
+  const trigger: TriggerProvider = {
+    name: "slack",
+    eventNames: ["slack.mention"],
+    match: (external) => {
+      used.push(`match:${id}`);
+      const payload = external.payload;
+      const applicationId =
+        typeof payload === "object" && payload !== null && "appId" in payload
+          ? payload.appId
+          : undefined;
+      return Promise.resolve([
+        {
+          triggerName: "mention",
+          triggerContext: { provider: "slack", target: { applicationId } },
+          outputContext: { provider: "slack", applicationId },
+          hubConfig: {},
+          conversation: null,
+          invocation: { status: "accepted", prompt: "", inputs: {} },
+        },
+      ]);
+    },
+    materializeContext: () => {
+      used.push(`context:${id}`);
+      return Promise.resolve(undefined);
+    },
+    onAgentExecutionTerminal: () => {
+      used.push(`terminal:${id}`);
+      return Promise.resolve();
+    },
+  };
+  return {
+    configurationSnapshot: { version: configurationVersion, callbackOrigin: "https://hub.test" },
+    connection: {
+      name: "slack",
+      status: () => ({ status: "connected" }),
+      actions: {
+        start: () => Promise.resolve(Response.json({ url: `https://provider.test/${id}` })),
+        callback: () => Promise.resolve(Response.json({ completed: id })),
+        disconnect: () => {
+          used.push(`disconnect:${id}`);
+          return Promise.resolve(Response.json({ disconnected: true }));
+        },
+      },
+    },
+    triggerProviders: [() => trigger],
+    sources: [{ start: () => Promise.resolve(), stop: () => Promise.resolve() }],
+    outputs: [
+      {
+        type: "slack.reply",
+        tool: { name: "reply", description: "reply", inputSchema: { type: "object" } },
+        execute: () => {
+          used.push(`reply:${id}`);
+          return Promise.resolve();
+        },
+      },
+    ],
+    requests: [],
+    attachment: {
+      provider: "slack",
+      resolve: () => {
+        used.push(`attachment:${id}`);
+        return Promise.resolve(new Response(id));
+      },
+    },
+  };
+}
+
 function downstreamRegistration(
   id: string,
   used: string[],
@@ -778,8 +1411,8 @@ function downstreamRegistration(
       Promise.resolve([
         {
           triggerName: "event",
-          triggerContext: { id },
-          outputContext: { provider: "slack", id },
+          triggerContext: { id, applicationId: "A1" },
+          outputContext: { provider: "slack", id, applicationId: "A1" },
           hubConfig: {},
           conversation: null,
           invocation: { status: "accepted", prompt: "", inputs: {} },
@@ -857,7 +1490,7 @@ function externalTrigger(): ExternalTrigger {
     source: "slack.mention",
     deliveryId: "delivery",
     receivedAt: new Date(),
-    payload: {},
+    payload: { appId: "A1" },
   };
 }
 
