@@ -26,12 +26,15 @@ const discordStatusSchema = z.discriminatedUnion("status", [
     status: z.literal("connected"),
   }),
 ]);
+/** The Slack apps a workspace can be connected to; a project names one when there are several. */
+const slackApplicationsSchema = z.array(z.string().min(1)).optional();
 const slackStatusSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("notConfigured") }),
-  z.object({ status: z.literal("disconnected") }),
-  z.object({ status: z.literal("requiresReauthorization") }),
+  z.object({ status: z.literal("notConfigured"), applications: slackApplicationsSchema }),
+  z.object({ status: z.literal("disconnected"), applications: slackApplicationsSchema }),
+  z.object({ status: z.literal("requiresReauthorization"), applications: slackApplicationsSchema }),
   z.object({
     status: z.literal("connected"),
+    applications: slackApplicationsSchema,
   }),
 ]);
 const linearStatusSchema = z.discriminatedUnion("status", [
@@ -53,6 +56,10 @@ const scopeSchema = z.object({
 });
 const providerSchema = scopeSchema.extend({
   provider: z.enum(CONNECTION_PROVIDERS),
+});
+const startConnectionSchema = providerSchema.extend({
+  /** The Slack app to install; required by Hub only when several can be connected. */
+  applicationId: z.string().trim().min(1).optional(),
 });
 const disconnectSchema = providerSchema.extend({ connectionId: z.string().uuid() });
 const startSchema = z.object({ url: z.string().url() });
@@ -85,13 +92,13 @@ export const connectionStatus = createServerFn({ method: "GET" })
   });
 
 export const startConnection = createServerFn({ method: "POST" })
-  .validator(providerSchema)
+  .validator(startConnectionSchema)
   .handler(async ({ data }): Promise<Result<{ url: string }>> => {
     const name = connectionProviderName(data.provider);
     try {
       const operation = CONNECTION_OPERATIONS[data.provider].start;
       const response = await handleConnections(
-        operationRequest("POST", "/connections/start", data),
+        operationRequest("POST", "/connections/start", data, undefined, data.applicationId),
         operation,
       );
       if (response.status === 403) {
@@ -206,6 +213,7 @@ function operationRequest(
   path: string,
   scope: { organizationSlug: string; projectSlug?: string | undefined },
   connectionId?: string,
+  applicationId?: string,
 ): Request {
   const incoming = getRequest();
   const headers = new Headers(incoming.headers);
@@ -214,6 +222,7 @@ function operationRequest(
   url.searchParams.set("organizationSlug", scope.organizationSlug);
   if (scope.projectSlug !== undefined) url.searchParams.set("projectSlug", scope.projectSlug);
   if (connectionId !== undefined) url.searchParams.set("connectionId", connectionId);
+  if (applicationId !== undefined) url.searchParams.set("applicationId", applicationId);
   return new Request(url, {
     method,
     headers,

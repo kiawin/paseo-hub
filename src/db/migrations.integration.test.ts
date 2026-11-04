@@ -11,6 +11,12 @@ import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import { z } from "zod";
 import { dump } from "js-yaml";
 import { createDatabase } from "./test-utils/runtime.js";
+import {
+  assertMultiSlackUpgrade,
+  seedSingleAppProviders,
+  SINGLE_APP_MIGRATION,
+  type UpgradeQuery,
+} from "./test-utils/multi-slack-upgrade.js";
 import { createHubApplication } from "../app.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
@@ -312,7 +318,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 50,
+      drizzleMigrations: 51,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -959,6 +965,19 @@ describe("database migration application", () => {
     }
   }, 120_000);
 
+  it("keys provider settings by app and keeps single-app data when opening Slack to more apps", async () => {
+    const url = await createHistoricalBaseline({
+      postgres,
+      prefix: "multi_slack_apps",
+      through: SINGLE_APP_MIGRATION,
+    });
+    const query: UpgradeQuery = (text, values) => poolQuery(url, text, values);
+    await seedSingleAppProviders(query);
+    const database = await createDatabase(url);
+    await database.close();
+    await assertMultiSlackUpgrade(query);
+  }, 120_000);
+
   it("claims concurrent lifecycle receipts without unique-index failures", async () => {
     const url = databaseUrl(postgres, "concurrent_lifecycle_receipts");
     const database = await createDatabase(url);
@@ -1178,9 +1197,10 @@ describe("database migration application", () => {
       await poolQuery(
         url,
         `insert into slack_connections
-           (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
+           (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes,
+            provider_application_id)
          values ($1, 'organization-a', 'startup-team', 'startup-slack', 'Startup Slack',
-                 'startup-bot', 'startup-token', '[]'::jsonb)`,
+                 'startup-bot', 'startup-token', '[]'::jsonb, 'A1')`,
         [slackConnectionId],
       );
       const configuration = {
@@ -1283,6 +1303,7 @@ describe("database migration application", () => {
       assert.notEqual(single.runtimeProjectId, multi.runtimeProjectId);
       assert.equal((await database.listProjectsForOrganization("organization-a")).length, 0);
       const accepted = await database.acceptSlackEvent({
+        providerApplicationId: "A1",
         teamId: "startup-team",
         deliveryId: "organization-trigger-adapter-route",
         source: "slack.mention",

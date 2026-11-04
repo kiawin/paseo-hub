@@ -191,7 +191,7 @@ function memberDatabase({ slack = true }: { slack?: boolean } = {}): Database {
             botUserId: "UBOT",
             botAccessToken: "token",
             scopes: ["app_mentions:read"],
-            providerApplicationId: null,
+            providerApplicationId: "A1",
           },
         ]
       : [],
@@ -311,6 +311,7 @@ async function dropSlackEvent(
   reason = "no_project_route",
 ): Promise<void> {
   const accepted = await database.acceptSlackEvent({
+    providerApplicationId: "A1",
     teamId: "T-ACME",
     deliveryId,
     source: "slack.mention",

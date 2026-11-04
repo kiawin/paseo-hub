@@ -97,6 +97,13 @@ describe("provider application failure copy", () => {
       messageFor("slack", new ProviderApplicationError("credentialsRejected", "identityMismatch")),
       /belong to different Slack apps/u,
     );
+    assert.match(
+      messageFor(
+        "slack",
+        new ProviderApplicationError("credentialsRejected", "applicationMismatch"),
+      ),
+      /different Slack app than the one you are changing/u,
+    );
   });
 
   it("names Linear when HTTPS is required", () => {

@@ -2,12 +2,17 @@ import { expect } from "@playwright/test";
 import { test } from "./app.js";
 import {
   GITHUB_EVENT_CREDENTIALS,
+  SECOND_SLACK_SOCKET_CREDENTIALS,
+  SECOND_SLACK_WEBHOOK_CREDENTIALS,
   SLACK_WEBHOOK_CREDENTIALS,
   WORKING_CREDENTIALS,
+  expectSlackDelivered,
+  slackPersistedState,
 } from "./helpers/apps.js";
 import { expectOneFailure, recordsFor, stripAnsi } from "./helpers/logs.js";
 import { SHOTS, type AppSetupSession } from "./helpers/app-evidence.js";
 import type { PaseoHub } from "./helpers/hub.js";
+import { projectApp } from "./helpers/projects/index.js";
 
 // Every journey claims a second, genuinely pristine application beside the fixture's own.
 test.describe.configure({ timeout: 150_000 });
@@ -513,6 +518,137 @@ test("Slack Socket Mode connects on plain HTTP with only two tokens", async ({ h
   }
 });
 
+test("two Slack apps run side by side in one workspace, each heard by its own trigger", async ({
+  hub,
+}) => {
+  const session = await openSetup(hub);
+  try {
+    const { surface, application } = session;
+    const slack = surface.slack;
+    const [first, second] = ["browser-slack-app", "browser-slack-app-2"] as const;
+    await slack.expand();
+    await slack.fillWorkingCredentials();
+    await slack.save();
+    await slack.expectFocusedResult("Slack connected.");
+    await slack.expectSlackAppStatus(first, "Connected");
+    const alone = await slackPersistedState(application);
+    expect(Object.keys(alone)).toEqual([first]);
+
+    // A second bot, added from the same paste form, joins the first rather than replacing it.
+    await slack.addSlackApp();
+    await slack.fill(SECOND_SLACK_SOCKET_CREDENTIALS);
+    await slack.save();
+    await expect(slack.newSlackApp()).toHaveCount(0);
+    await slack.expectSlackAppStatus(first, "Connected");
+    await slack.expectSlackAppStatus(second, "Connected");
+    await expect(slack.slackAppResult(second)).toContainText("Slack connected.");
+    await expect(slack.action("Add Slack app")).toBeVisible();
+    await slack.expectStatus("Connected");
+    await surface.expectNothingClipped();
+    await surface.shoot(SHOTS, "apps-07b-slack-two-apps.desktop");
+
+    // Adding the second app leaves the first's connection, settings and activation as they were,
+    // and gives the second a slug, bot and token of its own.
+    const together = await slackPersistedState(application);
+    expect(together[first]).toEqual(alone[first]);
+    const appTwo = together[second];
+    const appOne = together[first];
+    expect(appTwo?.connection).toEqual({
+      slug: "slack-t-acme-browser-slack-app-2",
+      botUserId: "B2",
+      botAccessToken: "xoxb-browser-fixture-2",
+    });
+    expect(appOne?.connection).toMatchObject({ botUserId: "B1" });
+    expect(appTwo?.connection?.slug).not.toEqual(appOne?.connection?.slug);
+    expect(appTwo?.connection?.botAccessToken).not.toEqual(appOne?.connection?.botAccessToken);
+    expect(appTwo?.configuration?.version).toBe(1);
+    expect(appTwo?.activation?.version).toBe(1);
+
+    // A change made in one app's group names that app: the other app's tokens are refused there.
+    await slack
+      .slackApp(second)
+      .getByRole("button", { name: "Replace credentials", exact: true })
+      .click();
+    await slack.fill(WORKING_CREDENTIALS.Slack);
+    await slack
+      .slackApp(second)
+      .getByRole("button", { name: "Connect Slack", exact: true })
+      .click();
+    await expect(slack.slackAppResult(second)).toContainText(
+      "different Slack app than the one you are changing",
+    );
+    await slack.expectSlackAppStatus(first, "Connected");
+    await slack.expectSlackAppStatus(second, "Connected");
+    expect(await slackPersistedState(application)).toEqual(together);
+
+    // A monitor sees both apps' sockets, and Hub is healthy while both are up.
+    await expect
+      .poll(async () => (await session.slackHealth()).apps.map((app) => app.state))
+      .toEqual(["connected", "connected"]);
+    expect(await session.slackHealth()).toMatchObject({
+      status: 200,
+      ok: true,
+      apps: [
+        { ok: true, transport: "socket" },
+        { ok: true, transport: "socket" },
+      ],
+    });
+
+    // Each bot is mentioned in a thread with the same Slack event id, one after the other. Each
+    // mention is its own delivery and launches only the trigger routed to its own app's connection.
+    await session.prepareSlackSocketWorkflow();
+    const eventId = "browser-socket-two-apps";
+    const connections = await application.query(
+      `select provider_application_id app, id from slack_connections where team_id = 'T-ACME'`,
+    );
+    const connectionOf = (appId: string) => connections.find((row) => row["app"] === appId)?.["id"];
+    expect(connections).toHaveLength(2);
+    const readers = async () =>
+      new Set(
+        (await session.slackBotCalls())
+          .filter((call) => call.method === "readThreadMessages")
+          .map((call) => call.connectionId),
+      );
+    for (const [index, appId] of [first, second].entries()) {
+      // Launching a run reads its thread. A run keeps being launched until its daemon answers, so
+      // reads recur; what matters is whose connection they use. Before the second mention only
+      // the first app's run exists, so its reads are the first app's alone; once the second is
+      // mentioned, the second app's connection appears and no connection outside the two does.
+      await session.deliverSlackSocketMention(eventId, appId);
+      await expectSlackDelivered(session, eventId, appId);
+      await expect
+        .poll(async () => [...(await readers())].toSorted())
+        .toEqual([connectionOf(first), ...(index === 0 ? [] : [connectionOf(second)])].toSorted());
+    }
+    const runs = await application.query(
+      `select receipt.delivery_id delivery, run.configured_trigger_name trigger,
+         run.output_context->>'applicationId' app, run.output_context->>'connectionId' connection,
+         run.conversation->>'key' conversation
+       from trigger_runs run
+       join provider_event_receipts receipt on receipt.id = run.provider_event_receipt_id
+       where receipt.delivery_id like $1`,
+      [`slack-%-${eventId}`],
+    );
+    // The run's output context is what its reply, reactions and reads use: its own app's bot. The
+    // same thread in the same channel is a separate conversation for each app.
+    expect(runs).toHaveLength(2);
+    expect(runs).toEqual(
+      expect.arrayContaining(
+        [first, second].map((appId) => ({
+          delivery: `slack-${appId}-${eventId}`,
+          trigger: `socket-mention-${appId}`,
+          app: appId,
+          connection: connectionOf(appId),
+          conversation: JSON.stringify(["slack", appId, "T-ACME", "C1", "1700000000.000001"]),
+        })),
+      ),
+    );
+    expect(new Set(runs.map((run) => run["conversation"])).size).toBe(2);
+  } finally {
+    await session.close();
+  }
+});
+
 test("Slack Socket Mode rejects a bad app token without saving or leaking it", async ({ hub }) => {
   const session = await openSetup(hub);
   try {
@@ -549,6 +685,157 @@ test("Slack webhooks use the exact built zero-env PGlite HTTPS proxy journey", a
     await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
     await page.getByRole("link", { name: "Accept installation" }).click();
     await surface.slack.expectStatus("Connected");
+  } finally {
+    await session.close();
+  }
+});
+
+test("two Slack webhook apps install apart, and each connect names the app it is for", async ({
+  hub,
+}) => {
+  const session = await hub.openAppSetup({ account: OPERATOR, reverseProxy: true });
+  try {
+    const { application, page, surface } = session;
+    const slack = surface.slack;
+    const [first, second] = ["browser-slack-app", "browser-slack-app-2"] as const;
+    const accept = async () => {
+      await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
+      await page.getByRole("link", { name: "Accept installation" }).click();
+    };
+    await slack.expand();
+    await slack.chooseSlackTransport("Webhooks");
+    await slack.fill(SLACK_WEBHOOK_CREDENTIALS);
+    await slack.save();
+    await accept();
+    await slack.expectStatus("Connected");
+    const alone = await slackPersistedState(application);
+    expect(Object.keys(alone)).toEqual([first]);
+
+    // The second webhook app is set up beside the first and installs as itself.
+    await slack.expectExpanded();
+    await slack.addSlackApp();
+    await slack.chooseSlackTransport("Webhooks");
+    await slack.fill(SECOND_SLACK_WEBHOOK_CREDENTIALS);
+    await slack.save();
+    await accept();
+    // Slack's return opens its own section.
+    await slack.expectExpanded();
+    await slack.expectSlackAppStatus(first, "Connected");
+    await slack.expectSlackAppStatus(second, "Connected");
+
+    // Installing the second app leaves the first's connection, settings and activation as they
+    // were, and gives the second a slug, bot and token of its own.
+    const together = await slackPersistedState(application);
+    expect(together[first]).toEqual(alone[first]);
+    expect(together[first]?.connection).toMatchObject({
+      botUserId: "B1",
+      botAccessToken: "xoxb-fixture",
+    });
+    expect(together[second]?.connection).toMatchObject({
+      botUserId: "B2",
+      botAccessToken: `xoxb-fixture-${second}`,
+    });
+    expect(together[second]?.connection?.slug).not.toEqual(together[first]?.connection?.slug);
+
+    // Adding a workspace from one app's group installs that app; with two apps running, a start
+    // that named no app is refused rather than guessed.
+    const touched = async () =>
+      Object.fromEntries(
+        (
+          await application.query(
+            `select provider_application_id app, updated_at::text updated
+             from slack_connections where team_id = 'T-ACME'`,
+          )
+        ).map((row) => [row["app"], row["updated"]]),
+      );
+    // Reinstalling an app writes the same bot and token, so the install is told apart by whose
+    // connection it touched: only the app the click named.
+    const beforeAdd = await touched();
+    await slack
+      .slackApp(second)
+      .getByRole("button", { name: "Add another workspace", exact: true })
+      .click();
+    await accept();
+    await expect.poll(async () => (await touched())[second]).not.toEqual(beforeAdd[second]);
+    expect((await touched())[first]).toEqual(beforeAdd[first]);
+    const owners = async () =>
+      (
+        await application.query(
+          `select provider_application_id app from slack_connections
+           where team_id = 'T-ACME' order by provider_application_id`,
+        )
+      ).map((row) => row["app"]);
+    expect(await owners()).toEqual([first, second]);
+    expect((await slackPersistedState(application))[first]).toEqual(alone[first]);
+
+    // Both apps post to the one events URL, and Hub hands each request to the app whose signing
+    // secret verifies it. A request signed with a secret no app owns is unauthorized (401), and one
+    // for an app that was signed with another app's secret reaches that other app, which refuses
+    // an event that is not its own (400) without recording it.
+    const secretOf = {
+      [first]: SLACK_WEBHOOK_CREDENTIALS["Signing Secret"],
+      [second]: SECOND_SLACK_WEBHOOK_CREDENTIALS["Signing Secret"],
+    };
+    const delivered = async (deliveryId: string) =>
+      (
+        await application.query(
+          `select delivery_id from provider_event_receipts where delivery_id = $1`,
+          [deliveryId],
+        )
+      ).length;
+    for (const appId of [first, second]) {
+      const eventId = `browser-signed-${appId}`;
+      expect(await session.postSlackEvent({ appId, eventId, signingSecret: secretOf[appId] })).toBe(
+        200,
+      );
+      await expect.poll(() => delivered(`slack-${appId}-${eventId}`)).toBe(1);
+    }
+    expect(
+      await session.postSlackEvent({
+        appId: second,
+        eventId: "browser-signed-bad-secret",
+        signingSecret: "not-either-apps-signing-secret",
+      }),
+    ).toBe(401);
+    expect(
+      await session.postSlackEvent({
+        appId: second,
+        eventId: "browser-signed-wrong-app",
+        signingSecret: secretOf[first],
+      }),
+    ).toBe(400);
+    expect(await delivered(`slack-${second}-browser-signed-wrong-app`)).toBe(0);
+    expect(await delivered("slack-browser-slack-app-browser-signed-wrong-app")).toBe(0);
+    expect(await delivered(`slack-${second}-browser-signed-bad-secret`)).toBe(0);
+
+    // Webhook apps have no socket to stall, so a monitor sees both apps healthy.
+    expect(await session.slackHealth()).toMatchObject({
+      status: 200,
+      ok: true,
+      apps: [
+        { ok: true, transport: "webhook" },
+        { ok: true, transport: "webhook" },
+      ],
+    });
+
+    // A project's Connect Slack asks which app to install and starts the one picked. With two
+    // apps running, a start that named none is refused, so reaching Slack's install is the proof.
+    await surface.leave("Finish");
+    await projectApp(page).navigation.openOrganizationSection("Connections");
+    const card = page.getByRole("main");
+    await expect(card.getByText("app browser-slack-app-2", { exact: false })).toBeVisible();
+    await card.getByRole("button", { name: "Connect Slack", exact: true }).click();
+    await expect(
+      page.getByRole("menuitem", { name: "App browser-slack-app", exact: true }),
+    ).toBeVisible();
+    const beforeMenu = await touched();
+    await page.getByRole("menuitem", { name: "App browser-slack-app-2", exact: true }).click();
+    await accept();
+    await expect(page.getByRole("heading", { name: "Connections", level: 1 })).toBeVisible();
+    await expect.poll(async () => (await touched())[second]).not.toEqual(beforeMenu[second]);
+    expect((await touched())[first]).toEqual(beforeMenu[first]);
+    expect(await owners()).toEqual([first, second]);
+    expect((await slackPersistedState(application))[first]).toEqual(alone[first]);
   } finally {
     await session.close();
   }

@@ -18,6 +18,21 @@ import { ProjectExternalFacts } from "./helpers/projects/external.js";
 
 const billingInspectSchema = z.object({ reportedSeatQuantity: z.number().nullable() });
 const slackSocketEvidenceSchema = z.object({ receipts: z.number(), runs: z.number() });
+const slackBotCallsSchema = z.array(
+  z.object({
+    method: z.enum([
+      "sendMessage",
+      "addReaction",
+      "removeReaction",
+      "readThreadMessages",
+      "lookupUserName",
+    ]),
+    connectionId: z.string(),
+    channelId: z.string().optional(),
+    threadTs: z.string().optional(),
+    userId: z.string().optional(),
+  }),
+);
 
 export const test = base.extend<{
   hub: PaseoHub;
@@ -148,12 +163,22 @@ class BuiltApplications {
         deliverCommand(server, { type: "daemon-enrollment-token", verifier }),
       failNextProjectRead: () => deliverCommand(server, { type: "fail-next-project-read" }),
       prepareSlackSocketWorkflow: () => deliverCommand(server, { type: "slack-socket-prepare" }),
-      deliverSlackSocketMention: (eventId: string) =>
-        deliverCommand(server, { type: "slack-socket-deliver", eventId }),
-      slackSocketEvidence: async (eventId: string) =>
+      deliverSlackSocketMention: (eventId: string, appId?: string) =>
+        deliverCommand(server, {
+          type: "slack-socket-deliver",
+          eventId,
+          ...(appId === undefined ? {} : { appId }),
+        }),
+      slackSocketEvidence: async (eventId: string, appId?: string) =>
         slackSocketEvidenceSchema.parse(
-          await deliverCommandForData(server, { type: "slack-socket-inspect", eventId }),
+          await deliverCommandForData(server, {
+            type: "slack-socket-inspect",
+            eventId,
+            ...(appId === undefined ? {} : { appId }),
+          }),
         ),
+      slackBotCalls: async () =>
+        slackBotCallsSchema.parse(await deliverCommandForData(server, { type: "slack-bot-calls" })),
       query: async (sql, params = []) => {
         const rows = await deliverCommandForData(server, { type: "database-query", sql, params });
         if (!Array.isArray(rows)) throw new Error("database query returned invalid rows");

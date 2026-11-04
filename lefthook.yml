@@ -6,8 +6,12 @@ pre-commit:
       exclude:
         - "**/package-lock.json"
       run: npm run format:check:files -- {staged_files}
+    # The same files `npm run lint` covers in CI; e2e/ is checked by typecheck:e2e instead.
     - name: lint
-      glob: "*.{js,jsx,ts,tsx}"
+      glob:
+        - "src/*.{js,jsx,ts,tsx}"
+        - "vite.config.ts"
+        - "drizzle.config.ts"
       run: npm run lint -- {staged_files}
     - name: typecheck
       run: npm run typecheck

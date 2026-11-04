@@ -5,7 +5,7 @@ import { createMemoryDatabase } from "../db/memory.js";
 import { ProjectDashboard } from "./dashboard.js";
 
 describe("project dashboard activity read models", () => {
-  it("uses canonical Linear health in project and organization snapshots", async () => {
+  it("uses canonical Linear health and each Slack connection's app in both snapshots", async () => {
     const database = createMemoryDatabase({
       memberships: [
         {
@@ -28,7 +28,30 @@ describe("project dashboard activity read models", () => {
       Promise.resolve({
         github: [],
         discord: [],
-        slack: [],
+        slack: [
+          {
+            id: "slack-a",
+            organizationId: "org-1",
+            slug: "slack-t1",
+            teamId: "T1",
+            teamName: "Acme",
+            botUserId: "U-A",
+            botAccessToken: "xoxb-a",
+            scopes: [],
+            providerApplicationId: "A1",
+          },
+          {
+            id: "slack-b",
+            organizationId: "org-1",
+            slug: "slack-t1-b1",
+            teamId: "T1",
+            teamName: "Acme",
+            botUserId: "U-B",
+            botAccessToken: "xoxb-b",
+            scopes: [],
+            providerApplicationId: "B1",
+          },
+        ],
         linear: [
           {
             id: "expired",
@@ -78,6 +101,17 @@ describe("project dashboard activity read models", () => {
         [
           { id: "expired", requiresReauthorization: true },
           { id: "refreshable", requiresReauthorization: false },
+        ],
+      );
+      // Two Slack apps in one workspace: each connection says which app it belongs to.
+      assert.deepEqual(
+        snapshot.connections.slack.map((connection) => [
+          connection.id,
+          connection.providerApplicationId,
+        ]),
+        [
+          ["slack-a", "A1"],
+          ["slack-b", "B1"],
         ],
       );
     }

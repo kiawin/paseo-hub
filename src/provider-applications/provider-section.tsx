@@ -2,7 +2,18 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { ExternalLink } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { Card, CardSkeleton } from "../components/app/card.js";
 import { FormField } from "../components/app/form-field.js";
 import { CopyBlock, CopyField } from "../components/app/copy-field.js";
@@ -24,8 +35,10 @@ import { cn } from "../lib/utils.js";
 import {
   guideFields,
   guideGroups,
+  DEFAULT_SLACK_APP_NAME,
   guideUrl,
   isSecureOrigin,
+  SLACK_APP_NAME_HINT,
   SLACK_WEBHOOK_GUIDE,
   slackManifest,
   statusPresentation,
@@ -41,10 +54,12 @@ import {
   verifyAndSaveProviderApplication,
 } from "./functions.js";
 import type {
+  ProviderApplicationResult,
   ProviderApplicationSaveResult,
   ProviderApplicationSurface,
   ProviderApplicationView,
 } from "./index.js";
+import { headlineStatus, UNCONFIGURED_SLACK } from "./overview.js";
 
 export interface SectionReturn {
   tone: "success" | "error";
@@ -60,10 +75,9 @@ interface SaveMutationInput {
   data: Record<string, unknown> & { provider: string; transport?: "socket" | "webhook" };
 }
 
-// eslint-disable-next-line complexity -- this component owns one provider card's complete workflow.
 export function ProviderSection({
   guide,
-  view,
+  views,
   callbackOrigin,
   surface,
   organizationId,
@@ -72,7 +86,8 @@ export function ProviderSection({
   returned,
 }: {
   guide: ProviderGuide;
-  view: ProviderApplicationView;
+  /** The provider's apps: every saved Slack app, or the one app of any other provider. */
+  views: readonly ProviderApplicationView[];
   callbackOrigin: string;
   surface: ProviderApplicationSurface;
   organizationId: string;
@@ -81,6 +96,186 @@ export function ProviderSection({
   /** The outcome of an install or authorization that just came back to this section. */
   returned: SectionReturn | undefined;
 }) {
+  const status = statusPresentation(headlineStatus(views));
+  const workflow = (view: ProviderApplicationView, slot: ApplicationSlot) => (
+    <ApplicationWorkflow
+      guide={guide}
+      view={view}
+      callbackOrigin={callbackOrigin}
+      surface={surface}
+      organizationId={organizationId}
+      {...slot}
+    />
+  );
+  return (
+    <Disclosure
+      id={guide.provider}
+      open={open}
+      onOpenChange={onOpenChange}
+      media={<ProviderGlyph provider={guide.provider} />}
+      title={guide.name}
+      description={guide.summary}
+      status={<StatusPill tone={status.tone}>{status.label}</StatusPill>}
+    >
+      {guide.provider === "slack" ? (
+        <SlackApplications
+          guide={guide}
+          views={views}
+          returned={returned}
+          renderApplication={workflow}
+        />
+      ) : (
+        workflow(views[0] ?? UNCONFIGURED_SLACK, { returned })
+      )}
+    </Disclosure>
+  );
+}
+
+/** Which app one workflow acts on, and what it reports once it has saved one. */
+export interface ApplicationSlot {
+  /** The saved Slack app this workflow changes; absent while a new one is set up. */
+  applicationId?: string;
+  returned: SectionReturn | undefined;
+  onSaved?: (result: ProviderApplicationResult, outcome: SectionReturn) => void;
+  /** Names the workflow's live region when the app id cannot, as for a second, new app. */
+  statusLabel?: string;
+}
+
+/**
+ * Slack runs several apps side by side. Each saved app is its own group, headed by its App ID,
+ * and a further app is set up from the same paste form with no app selected. An app set from the
+ * environment is the only Slack app Hub runs, so there is nothing to add beside it.
+ */
+export function SlackApplications({
+  guide,
+  views,
+  returned,
+  renderApplication,
+}: {
+  guide: ProviderGuide;
+  views: readonly ProviderApplicationView[];
+  returned: SectionReturn | undefined;
+  renderApplication: (view: ProviderApplicationView, slot: ApplicationSlot) => ReactNode;
+}) {
+  const [adding, setAdding] = useState(false);
+  // A new app's workflow unmounts once the app is listed, so the list carries its outcome.
+  const [saved, setSaved] = useState<{ applicationId: string; outcome: SectionReturn }>();
+  const add = useRef<HTMLButtonElement>(null);
+  const onSaved = useCallback((result: ProviderApplicationResult, outcome: SectionReturn) => {
+    setSaved({ applicationId: result.identity.id, outcome });
+    setAdding(false);
+  }, []);
+  const cancel = useCallback(() => {
+    setAdding(false);
+    requestAnimationFrame(() => add.current?.focus());
+  }, []);
+  if (views.length === 0) return renderApplication(UNCONFIGURED_SLACK, { returned, onSaved });
+  const managed = views.some((view) => view.managedByEnvironment);
+  let more: ReactNode = null;
+  if (adding) {
+    more = (
+      <Section
+        title="New Slack app"
+        description="Create it in Slack the same way, then paste its tokens here. The apps above keep running."
+        action={
+          <Button type="button" variant="outline" size="sm" onClick={cancel}>
+            Cancel
+          </Button>
+        }
+      >
+        {renderApplication(UNCONFIGURED_SLACK, {
+          returned: undefined,
+          onSaved,
+          statusLabel: `${guide.name} status for a new app`,
+        })}
+      </Section>
+    );
+  } else if (!managed) {
+    more = (
+      <FormActions>
+        <Button ref={add} type="button" variant="outline" onClick={() => setAdding(true)}>
+          Add Slack app
+        </Button>
+      </FormActions>
+    );
+  }
+  // A new app's form closes on save, and the app joins the list on the next refresh; until it
+  // does, its outcome is said here so the save is never left unconfirmed.
+  const unlisted =
+    saved !== undefined && !views.some((view) => slackApplicationId(view) === saved.applicationId)
+      ? saved.outcome
+      : undefined;
+  return (
+    <div className="grid min-w-0 gap-5">
+      {/* A return from Slack does not say which app it was for, so it is said once, above them. */}
+      <ReturnedRegion guide={guide} returned={unlisted ?? returned} />
+      <div className="min-w-0">
+        {views.map((view, index) => {
+          const applicationId = slackApplicationId(view);
+          const presentation = statusPresentation(view.status);
+          return (
+            <Section
+              key={applicationId ?? index}
+              title={`App ${applicationId ?? index + 1}`}
+              status={<StatusPill tone={presentation.tone}>{presentation.label}</StatusPill>}
+            >
+              {renderApplication(view, {
+                ...(applicationId === undefined ? {} : { applicationId }),
+                returned:
+                  saved !== undefined && saved.applicationId === applicationId
+                    ? saved.outcome
+                    : undefined,
+              })}
+            </Section>
+          );
+        })}
+        {more}
+      </div>
+    </div>
+  );
+}
+
+/** An outcome that arrived with the page, focused on arrival when it is good news. */
+function ReturnedRegion({
+  guide,
+  returned,
+}: {
+  guide: ProviderGuide;
+  returned: SectionReturn | undefined;
+}) {
+  const region = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (returned?.tone === "success") region.current?.focus();
+  }, [returned]);
+  if (returned === undefined) return null;
+  return (
+    <ResultRegion ref={region} guide={guide} label={`${guide.name} status`} outcome={returned} />
+  );
+}
+
+/** A Slack app is known by its App ID, from its identity once verified or from its settings. */
+function slackApplicationId(view: ProviderApplicationView): string | undefined {
+  return view.identity?.provider === "slack" ? view.identity.id : view.identifiers["appId"];
+}
+
+// eslint-disable-next-line complexity -- this component owns one app's complete workflow.
+function ApplicationWorkflow({
+  guide,
+  view,
+  callbackOrigin,
+  surface,
+  organizationId,
+  applicationId,
+  returned,
+  onSaved,
+  statusLabel,
+}: {
+  guide: ProviderGuide;
+  view: ProviderApplicationView;
+  callbackOrigin: string;
+  surface: ProviderApplicationSurface;
+  organizationId: string;
+} & ApplicationSlot) {
   const queryClient = useQueryClient();
   const savedSlackTransport = view.identifiers["transport"] === "webhook" ? "webhook" : "socket";
   const [slackTransport, setSlackTransport] = useState<"socket" | "webhook">(savedSlackTransport);
@@ -92,6 +287,14 @@ export function ProviderSection({
   const result = useRef<HTMLDivElement>(null);
   const replace = useRef<HTMLButtonElement>(null);
   const fields = guideFields(activeGuide, callbackOrigin);
+  const scope = applicationId === undefined ? guide.provider : `${guide.provider}-${applicationId}`;
+  // The name outlives the manifest step, which remounts when the operator switches transport.
+  const [appName, setAppName] = useState(DEFAULT_SLACK_APP_NAME);
+  const manifestName = useMemo(() => ({ name: appName, setName: setAppName }), [appName]);
+  const app = useMemo(
+    () => (applicationId === undefined ? {} : { applicationId }),
+    [applicationId],
+  );
   // Every transition the operator caused ends here: the section says what happened, and the
   // keyboard lands on it rather than on the document body a disabled form left behind. A
   // failure takes the keyboard onto the alert itself, so only a success needs the region.
@@ -99,7 +302,7 @@ export function ProviderSection({
     if (outcome?.tone === "success") result.current?.focus();
   }, [outcome]);
   useEffect(() => {
-    if (replacing) document.getElementById(`${activeGuide.provider}-${fields[0]?.name}`)?.focus();
+    if (replacing) document.getElementById(`${scope}-${fields[0]?.name}`)?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the first field name is stable per guide
   }, [activeGuide, replacing]);
 
@@ -113,7 +316,7 @@ export function ProviderSection({
       if (input.data.provider !== "slack" || input.data.transport !== "socket") {
         return saveProvider(input);
       }
-      const { appToken, botToken, expectedVersion } = input.data;
+      const { appToken, botToken, expectedVersion, applicationId: named } = input.data;
       if (typeof appToken !== "string" || typeof botToken !== "string") {
         return Promise.reject(new Error("invalid Slack Socket Mode form"));
       }
@@ -122,6 +325,7 @@ export function ProviderSection({
           appToken,
           botToken,
           ...(typeof expectedVersion === "number" ? { expectedVersion } : {}),
+          ...(typeof named === "string" ? { applicationId: named } : {}),
         },
       });
     },
@@ -137,7 +341,9 @@ export function ProviderSection({
         return;
       }
       setReplacing(false);
-      setOutcome({ tone: "success", message: activeGuide.verifiedMessage ?? "" });
+      const verified: Outcome = { tone: "success", message: activeGuide.verifiedMessage ?? "" };
+      setOutcome(verified);
+      onSaved?.(response.data, verified);
       await queryClient.invalidateQueries({ queryKey: ["provider-applications"] });
     },
     onError: () => setOutcome({ tone: "error", message: unreachable(activeGuide.name) }),
@@ -157,7 +363,9 @@ export function ProviderSection({
     onError: () => setOutcome({ tone: "error", message: unreachable(guide.name) }),
   });
   const retryDelivery = useMutation({
-    mutationFn: useServerFn(retrySlackSocketDelivery) as (input: {}) => Promise<VoidResponse>,
+    mutationFn: useServerFn(retrySlackSocketDelivery) as (
+      input: Parameters<typeof retrySlackSocketDelivery>[0],
+    ) => Promise<VoidResponse>,
     onSuccess: async (response) => {
       if (response.status === "error") {
         setOutcome({ tone: "error", message: response.error.message });
@@ -204,18 +412,18 @@ export function ProviderSection({
           ...(activeGuide.transport === undefined ? {} : { transport: activeGuide.transport }),
           surface,
           ...expectedVersion,
+          ...(activeGuide.provider === "slack" ? app : {}),
           ...values,
         },
       });
     },
-    [activeGuide, fields, save, surface, view.configurationVersion],
+    [activeGuide, app, fields, save, surface, view.configurationVersion],
   );
 
   const startConnection = useCallback(() => {
-    connect.mutate({ data: { provider: guide.provider, organizationId, surface } });
-  }, [connect, guide.provider, organizationId, surface]);
+    connect.mutate({ data: { provider: guide.provider, organizationId, surface, ...app } });
+  }, [app, connect, guide.provider, organizationId, surface]);
 
-  const status = statusPresentation(view.status);
   // Once anything is saved the instructions become reference material and move behind a
   // disclosure, so completed work is never buried under the manual that created it.
   const phase = sectionPhase(activeGuide, view, callbackOrigin, replacing);
@@ -223,7 +431,8 @@ export function ProviderSection({
   const form =
     phase === "guiding" || phase === "replacing" ? (
       <PasteForm
-        id={`${activeGuide.provider}-application-form`}
+        id={`${scope}-application-form`}
+        scope={scope}
         guide={activeGuide}
         origin={callbackOrigin}
         errors={errors}
@@ -240,26 +449,31 @@ export function ProviderSection({
     ) : null;
 
   return (
-    <Disclosure
-      id={guide.provider}
-      open={open}
-      onOpenChange={onOpenChange}
-      media={<ProviderGlyph provider={guide.provider} />}
-      title={guide.name}
-      description={guide.summary}
-      status={<StatusPill tone={status.tone}>{status.label}</StatusPill>}
-    >
+    <ManifestNameContext value={manifestName}>
       <div className="grid gap-5">
         {view.managedByEnvironment ? <EnvironmentNotice guide={activeGuide} /> : null}
         {/* One node for the whole life of the section. A save moves the section from setup to
             saved, and focus that had just landed on a node the phase change unmounts is focus
             dropped on the floor. */}
-        <ResultRegion ref={result} guide={activeGuide} outcome={outcome} />
+        <ResultRegion
+          ref={result}
+          guide={activeGuide}
+          // Several Slack apps each have a region; the app tells them apart, and the name still
+          // starts with the provider's so a single app reads as before.
+          label={
+            statusLabel ??
+            (applicationId === undefined
+              ? `${guide.name} status`
+              : `${guide.name} status for app ${applicationId}`)
+          }
+          outcome={outcome}
+        />
         {guide.provider === "slack" &&
         (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
           <SlackTransportChoice value={slackTransport} onChange={setSlackTransport} />
         ) : null}
         <SectionBody
+          scope={scope}
           guide={activeGuide}
           view={view}
           origin={callbackOrigin}
@@ -269,7 +483,7 @@ export function ProviderSection({
           connecting={connect.isPending || leaving}
           replaceRef={replace}
           onConnect={startConnection}
-          onRetry={() => retryDelivery.mutate({})}
+          onRetry={() => retryDelivery.mutate({ data: app })}
           onReplace={() => {
             setErrors({});
             setOutcome(undefined);
@@ -277,7 +491,7 @@ export function ProviderSection({
           }}
         />
       </div>
-    </Disclosure>
+    </ManifestNameContext>
   );
 }
 
@@ -338,6 +552,7 @@ function sectionPhase(
 }
 
 function SectionBody({
+  scope,
   guide,
   view,
   origin,
@@ -350,6 +565,7 @@ function SectionBody({
   onRetry,
   onReplace,
 }: {
+  scope: string;
   guide: ProviderGuide;
   view: ProviderApplicationView;
   origin: string;
@@ -410,7 +626,7 @@ function SectionBody({
           </FormActions>
         </>
       )}
-      <SetupSteps guide={guide} origin={origin} />
+      <SetupSteps scope={scope} guide={guide} origin={origin} />
     </div>
   );
 }
@@ -541,6 +757,7 @@ function slackSocketEventState(
  */
 function PasteForm({
   id,
+  scope,
   guide,
   origin,
   errors,
@@ -552,6 +769,8 @@ function PasteForm({
   onCancel,
 }: {
   id: string;
+  /** Prefixes every field id; Slack's apps can each have a form open at once. */
+  scope: string;
   guide: ProviderGuide;
   origin: string;
   errors: Readonly<Record<string, string>>;
@@ -591,7 +810,7 @@ function PasteForm({
             {group.fields.map((field) => (
               <FormField
                 key={field.name}
-                id={`${guide.provider}-${field.name}`}
+                id={`${scope}-${field.name}`}
                 name={field.name}
                 label={field.label}
                 kind={field.kind}
@@ -661,10 +880,12 @@ function ConnectAction({
 function ResultRegion({
   ref,
   guide,
+  label,
   outcome,
 }: {
   ref: React.RefObject<HTMLDivElement | null>;
   guide: ProviderGuide;
+  label: string;
   outcome: Outcome | undefined;
 }) {
   return (
@@ -672,7 +893,7 @@ function ResultRegion({
       ref={ref}
       role="status"
       tabIndex={-1}
-      aria-label={`${guide.name} status`}
+      aria-label={label}
       className={cn("grid gap-2 outline-none", outcome === undefined ? "sr-only" : "")}
     >
       <OutcomeMessage guide={guide} outcome={outcome} />
@@ -740,17 +961,20 @@ function HttpsGate({ guide, origin }: { guide: ProviderGuide; origin: string }) 
  * The instructions, after they stop being the job. Collapsed by default and never opened for
  * the operator — a finished section opens showing what it did, not how it was made.
  */
-function SetupSteps({ guide, origin }: { guide: ProviderGuide; origin: string }) {
+function SetupSteps({
+  scope,
+  guide,
+  origin,
+}: {
+  scope: string;
+  guide: ProviderGuide;
+  origin: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     // Its own id, never the provider's: the surface addresses a section by `data-provider`, and
     // two nodes answering to the same provider is one section too many.
-    <Disclosure
-      id={`${guide.provider}-setup-steps`}
-      open={open}
-      onOpenChange={setOpen}
-      title="Setup steps"
-    >
+    <Disclosure id={`${scope}-setup-steps`} open={open} onOpenChange={setOpen} title="Setup steps">
       <Instructions guide={guide} origin={origin} />
     </Disclosure>
   );
@@ -845,15 +1069,53 @@ function StepBody({
             <CopyField key={url.key} label={url.label} value={guideUrl(origin, url.path)} />
           ))}
           {step.manifest === true ? (
-            <CopyBlock
-              label="App manifest"
-              value={slackManifest(origin, guide.transport ?? "socket")}
-              action="Copy manifest"
-            />
+            <ManifestBlock origin={origin} transport={guide.transport ?? "socket"} />
           ) : null}
         </div>
       ) : null}
     </>
+  );
+}
+
+/** The manifest to paste, named by the operator so a second Slack app is mentioned by its own name. */
+interface ManifestName {
+  name: string;
+  setName: (name: string) => void;
+}
+
+/** The Slack app name a workflow's manifest is built with; held by the workflow, not the step. */
+export const ManifestNameContext = createContext<ManifestName | undefined>(undefined);
+
+/** The manifest to paste, named by the operator so a second Slack app is mentioned by its own name. */
+export function ManifestBlock({
+  origin,
+  transport,
+}: {
+  origin: string;
+  transport: "socket" | "webhook";
+}) {
+  const id = useId();
+  const held = useContext(ManifestNameContext);
+  const [own, setOwn] = useState(DEFAULT_SLACK_APP_NAME);
+  const name = held?.name ?? own;
+  const setName = held?.setName ?? setOwn;
+  return (
+    <div className="grid gap-3">
+      <FormField
+        id={`${id}-name`}
+        name="slackAppName"
+        label="App name"
+        kind="text"
+        description={SLACK_APP_NAME_HINT}
+        value={name}
+        onChange={setName}
+      />
+      <CopyBlock
+        label="App manifest"
+        value={slackManifest(origin, transport, name)}
+        action="Copy manifest"
+      />
+    </div>
   );
 }
 

@@ -10,7 +10,12 @@ import {
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
 import { createDatabase } from "../db/pg.js";
-import { createProviderApplicationInventory, createProviderApplicationStore } from "./index.js";
+import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
+import {
+  createProviderApplicationInventory,
+  createProviderApplicationStore,
+  type ProviderApplicationConfiguration,
+} from "./index.js";
 
 const roots: string[] = [];
 
@@ -25,6 +30,7 @@ describe("provider application persistence", () => {
     const first = await embeddedDatabaseRuntime(root);
     await exercisePersistence(first);
     await exerciseSlackAtomicTransition(first);
+    await exerciseSeveralSlackApps(first);
     await exerciseLinearScopeHealth(first);
     await first.runtime.close();
 
@@ -47,6 +53,7 @@ describe("provider application persistence", () => {
       const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
       await exercisePersistence(bundle);
       await exerciseSlackAtomicTransition(bundle);
+      await exerciseSeveralSlackApps(bundle);
       await exerciseLinearScopeHealth(bundle);
       await bundle.runtime.close();
 
@@ -183,7 +190,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
   await startAttempt("state-ok", null);
   await complete("state-ok", "T1", undefined);
   assert.equal((await store.read("slack"))?.version, 1);
-  assert.equal((await database.findSlackConnection("T1"))?.providerApplicationId, "A1");
+  assert.equal((await database.findSlackConnection("A1", "T1"))?.providerApplicationId, "A1");
   assert.equal(
     (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("slack"))[0]
       ?.status,
@@ -192,7 +199,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
 
   await startAttempt("state-conflict", 1);
   await assert.rejects(() => complete("state-conflict", "T2", 99));
-  assert.equal(await database.findSlackConnection("T2"), undefined);
+  assert.equal(await database.findSlackConnection("A1", "T2"), undefined);
   assert.equal((await store.read("slack"))?.version, 1);
   assert.equal(
     (
@@ -227,7 +234,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
       String(Reflect.get(Reflect.get(error, "cause") ?? {}, "message")) ===
         "simulated crash boundary",
   );
-  assert.equal(await database.findSlackConnection("T3"), undefined);
+  assert.equal(await database.findSlackConnection("A1", "T3"), undefined);
   assert.equal((await store.read("slack"))?.version, 1);
   assert.equal(
     (
@@ -272,7 +279,274 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
     socket.configuration.provider === "slack" ? socket.configuration.transport : undefined,
     "socket",
   );
-  assert.equal((await database.findSlackConnection("T2"))?.providerApplicationId, "A1");
+  assert.equal((await database.findSlackConnection("A1", "T2"))?.providerApplicationId, "A1");
+}
+
+/** Runs after `exerciseSlackAtomicTransition`, which leaves app A1 at version 2 with two teams. */
+async function exerciseSeveralSlackApps(bundle: DatabaseRuntimeBundle) {
+  const database = createDatabase(bundle.runtime, bundle.locks);
+  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
+  const webhook = (appId: string) => ({
+    provider: "slack" as const,
+    transport: "webhook" as const,
+    appId,
+    clientId: `client-${appId}`,
+    clientSecret: `secret-${appId}`,
+    signingSecret: `signing-${appId}`,
+  });
+  const identity = (appId: string) => ({ provider: "slack" as const, id: appId, name: appId });
+  const snapshot = async (appId: string) => {
+    const configuration = await bundle.runtime.query<{ version: number }>(
+      `select version, configuration::text as configuration, verified_external_identity::text
+              as identity, updated_at
+       from runtime_provider_configuration where provider = 'slack' and application_id = $1`,
+      [appId],
+    );
+    const activation = await bundle.runtime.query<{ configuration_version: number }>(
+      `select configuration_version, activated_at from runtime_provider_activation
+       where provider = 'slack' and provider_application_id = $1`,
+      [appId],
+    );
+    return { configuration: configuration.rows, activation: activation.rows };
+  };
+  const startAttempt = (
+    stateVerifier: string,
+    configuration: ProviderApplicationConfiguration,
+    configurationVersion: number,
+    expectedVersion: number | null,
+    activateConfiguration: boolean,
+  ) =>
+    database.startConnectionAttempt({
+      provider: "slack",
+      stateVerifier,
+      access: {
+        sessionId: "session",
+        userId: "operator",
+        membershipId: "member",
+        organizationId: "org",
+        returnRoute: "/settings/apps",
+      },
+      lifetimeMinutes: 10,
+      configurationVersion,
+      providerApplicationId: configuration.provider === "slack" ? configuration.appId : "",
+      callbackOrigin: "https://hub.test",
+      configurationSnapshot: configuration,
+      expectedConfigurationVersion: expectedVersion,
+      activateConfiguration,
+    });
+  let a = await snapshot("A1");
+  assert.equal(a.configuration[0]?.version, 2);
+
+  // App B through save and activate. App A owns connections; they do not conflict with B.
+  const savedB = await store.save({
+    provider: "slack",
+    configuration: webhook("B1"),
+    identity: identity("B1"),
+    expectedVersion: undefined,
+    updatedByUserId: "operator",
+  });
+  assert.equal(savedB.version, 1);
+  await store.activate({ provider: "slack", identity: identity("B1"), configurationVersion: 1 });
+  assert.deepEqual(await snapshot("A1"), a);
+  assert.equal((await store.read("slack", "B1"))?.version, 1);
+  assert.equal((await store.read("slack", "A1"))?.version, 2);
+  await assert.rejects(() => store.read("slack"), /several/u);
+  assert.deepEqual(
+    (await store.list("slack")).map((application) => application.identity.id),
+    ["A1", "B1"],
+  );
+  const b = await snapshot("B1");
+
+  // A version conflict on A leaves B untouched.
+  await assert.rejects(
+    () =>
+      store.save({
+        provider: "slack",
+        configuration: webhook("A1"),
+        identity: identity("A1"),
+        expectedVersion: 1,
+        updatedByUserId: "operator",
+      }),
+    (error: unknown) =>
+      error instanceof Error && error.name === "ProviderConfigurationConflictError",
+  );
+  assert.deepEqual(await snapshot("A1"), a);
+  assert.deepEqual(await snapshot("B1"), b);
+
+  // A successful change to A leaves B untouched.
+  const changedA = await store.save({
+    provider: "slack",
+    configuration: {
+      provider: "slack",
+      transport: "socket",
+      appId: "A1",
+      appToken: "xapp-rotated",
+    },
+    identity: identity("A1"),
+    expectedVersion: 2,
+    updatedByUserId: "operator",
+  });
+  assert.equal(changedA.version, 3);
+  assert.deepEqual(await snapshot("B1"), b);
+  a = await snapshot("A1");
+
+  // App C through Socket Mode, fresh.
+  const socketC = await store.completeSlackSocketApplication({
+    configuration: { provider: "slack", transport: "socket", appId: "C1", appToken: "xapp-c" },
+    identity: identity("C1"),
+    expectedVersion: undefined,
+    updatedByUserId: "operator",
+    organizationId: "org",
+    installation: {
+      appId: "C1",
+      teamId: "T21",
+      teamName: "Socket C",
+      botUserId: "UBOT-C",
+      botAccessToken: "xoxb-c",
+      scopes: [...SLACK_REQUIRED_BOT_SCOPES],
+    },
+  });
+  assert.equal(socketC.version, 1);
+  assert.deepEqual(await snapshot("A1"), a);
+  assert.deepEqual(await snapshot("B1"), b);
+  assert.equal((await snapshot("C1")).activation[0]?.configuration_version, 1);
+
+  // Changing C through Socket Mode leaves A and B untouched.
+  const rotatedC = await store.completeSlackSocketApplication({
+    configuration: { provider: "slack", transport: "socket", appId: "C1", appToken: "xapp-c2" },
+    identity: identity("C1"),
+    expectedVersion: 1,
+    updatedByUserId: "operator",
+    organizationId: "org",
+    installation: {
+      appId: "C1",
+      teamId: "T21",
+      teamName: "Socket C",
+      botUserId: "UBOT-C",
+      botAccessToken: "xoxb-c2",
+      scopes: [...SLACK_REQUIRED_BOT_SCOPES],
+    },
+  });
+  assert.equal(rotatedC.version, 2);
+  assert.deepEqual(await snapshot("A1"), a);
+  assert.deepEqual(await snapshot("B1"), b);
+  const c = await snapshot("C1");
+  assert.equal(c.activation[0]?.configuration_version, 2);
+
+  // An OAuth attempt for B is checked against B's activation, not A's version.
+  const bindB = (stateVerifier: string, teamId: string) =>
+    database.bindSlackConnection({
+      stateVerifier,
+      access: { sessionId: "session", userId: "operator" },
+      providerApplicationId: "B1",
+      phase: "slack_authorization",
+      teamId,
+      teamName: "Workspace B",
+      botUserId: "UBOT-B",
+      botAccessToken: "xoxb-b",
+      scopes: [...SLACK_REQUIRED_BOT_SCOPES],
+    });
+  await startAttempt("state-b-at-a-version", webhook("B1"), 2, null, false);
+  await assert.rejects(() => bindB("state-b-at-a-version", "T20"));
+  await startAttempt("state-b-current", webhook("B1"), 1, null, false);
+  await bindB("state-b-current", "T20");
+  assert.equal((await database.findSlackConnection("B1", "T20"))?.providerApplicationId, "B1");
+
+  // B's webhook install through bindSlackTransition moves only B.
+  const rotatedB = { ...webhook("B1"), clientSecret: "secret-B1-rotated" };
+  await startAttempt("state-b-install", rotatedB, 2, 1, true);
+  await store.completeSlackInstallation({
+    configuration: rotatedB,
+    identity: identity("B1"),
+    expectedVersion: 1,
+    updatedByUserId: "operator",
+    binding: {
+      providerApplicationId: "B1",
+      stateVerifier: "state-b-install",
+      phase: "slack_authorization",
+      access: { sessionId: "session", userId: "operator" },
+      teamId: "T22",
+      teamName: "Workspace B2",
+      botUserId: "UBOT-B2",
+      botAccessToken: "xoxb-b2",
+      scopes: [...SLACK_REQUIRED_BOT_SCOPES],
+    },
+  });
+  assert.equal((await store.read("slack", "B1"))?.version, 2);
+  assert.equal((await snapshot("B1")).activation[0]?.configuration_version, 2);
+  assert.deepEqual(await snapshot("A1"), a);
+  assert.deepEqual(await snapshot("C1"), c);
+
+  // A connection from before apps were recorded still conflicts with every new Slack app.
+  await bundle.runtime.query(
+    `insert into slack_connections
+       (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token)
+     values ('org', 'T30', 'legacy-slack', 'Legacy', 'U-OLD', 'xoxb-old')`,
+  );
+  await assert.rejects(
+    () =>
+      store.save({
+        provider: "slack",
+        configuration: webhook("D1"),
+        identity: identity("D1"),
+        expectedVersion: undefined,
+        updatedByUserId: "operator",
+      }),
+    (error: unknown) =>
+      error instanceof Error && error.name === "ProviderApplicationIdentityConflictError",
+  );
+  await startAttempt("state-d-install", webhook("D1"), 1, null, true);
+  await assert.rejects(() =>
+    store.completeSlackInstallation({
+      configuration: webhook("D1"),
+      identity: identity("D1"),
+      expectedVersion: undefined,
+      updatedByUserId: "operator",
+      binding: {
+        providerApplicationId: "D1",
+        stateVerifier: "state-d-install",
+        phase: "slack_authorization",
+        access: { sessionId: "session", userId: "operator" },
+        teamId: "T31",
+        teamName: "Workspace D",
+        botUserId: "UBOT-D",
+        botAccessToken: "xoxb-d",
+        scopes: [...SLACK_REQUIRED_BOT_SCOPES],
+      },
+    }),
+  );
+  assert.deepEqual(await snapshot("D1"), { configuration: [], activation: [] });
+  assert.equal(await database.findSlackConnection("D1", "T31"), undefined);
+  await bundle.runtime.query(`delete from slack_connections where team_id = 'T30'`);
+
+  // Every other provider keeps one app: a second GitHub app is refused and the first stays.
+  await assert.rejects(
+    () =>
+      store.save({
+        provider: "github",
+        configuration: {
+          provider: "github",
+          appId: "43",
+          appSlug: "second",
+          clientId: "client-43",
+          clientSecret: "secret-43",
+          privateKey: "private-key-43",
+          webhookSecret: "webhook-secret-43",
+        },
+        identity: { provider: "github", id: "43", name: "Second", ownerLogin: "acme" },
+        expectedVersion: undefined,
+        updatedByUserId: "operator",
+      }),
+    (error: unknown) =>
+      error instanceof Error && error.name === "ProviderConfigurationConflictError",
+  );
+  assert.deepEqual(
+    (await store.list("github")).map((application) => [
+      application.identity.id,
+      application.version,
+    ]),
+    [["42", 2]],
+  );
 }
 
 async function exerciseLinearScopeHealth(bundle: DatabaseRuntimeBundle) {

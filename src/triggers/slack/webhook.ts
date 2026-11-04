@@ -54,6 +54,46 @@ export function createSlackWebhookSource(options: SlackWebhookSourceOptions): Sl
   };
 }
 
+export interface SlackWebhookApp {
+  signingSecret: string;
+  handle(request: Request): Promise<Response>;
+}
+
+/**
+ * Hands a Slack events request to the webhook app whose signing secret verifies it. Every app is
+ * sent to the same events URL, so the signature is the only thing that says which app sent it. The
+ * body is read once, within the same limit each app's handler applies, and the app gets a copy.
+ */
+export async function routeSlackWebhookRequest(
+  request: Request,
+  apps: readonly SlackWebhookApp[],
+  nowMilliseconds = Date.now(),
+): Promise<Response> {
+  const secrets = apps.map((app) => app.signingSecret);
+  const signature = request.headers.get("x-slack-signature");
+  const timestamp = request.headers.get("x-slack-request-timestamp");
+  if (signature === null || timestamp === null) {
+    reportSlackRejection("signature_headers_missing", 401, secrets);
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const body = await readBoundedRequestBody(request, MAX_WEBHOOK_BYTES);
+  if (body instanceof Response) return body;
+  const app = apps.find((candidate) =>
+    verifySlackSignature(candidate.signingSecret, timestamp, body, signature, nowMilliseconds),
+  );
+  if (app === undefined) {
+    reportSlackRejection("signature_verification_failed", 401, secrets, signature);
+    return new Response("Unauthorized", { status: 401 });
+  }
+  return app.handle(
+    new Request(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: new Uint8Array(body),
+    }),
+  );
+}
+
 async function verifySlackRequest(
   request: Request,
   options: Pick<SlackWebhookSourceOptions, "signingSecret" | "now">,
@@ -61,14 +101,14 @@ async function verifySlackRequest(
   const signature = request.headers.get("x-slack-signature");
   const timestamp = request.headers.get("x-slack-request-timestamp");
   if (signature === null || timestamp === null) {
-    reportSlackRejection("signature_headers_missing", 401, options.signingSecret);
+    reportSlackRejection("signature_headers_missing", 401, [options.signingSecret]);
     return new Response("Unauthorized", { status: 401 });
   }
 
   const body = await readBoundedRequestBody(request, MAX_WEBHOOK_BYTES);
   if (body instanceof Response) return body;
   if (!verifySlackSignature(options.signingSecret, timestamp, body, signature, options.now?.())) {
-    reportSlackRejection("signature_verification_failed", 401, options.signingSecret, signature);
+    reportSlackRejection("signature_verification_failed", 401, [options.signingSecret], signature);
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -94,14 +134,14 @@ async function handleVerifiedSlackRequest(
 ): Promise<Response> {
   const envelopeType = SlackEnvelopeTypeSchema.safeParse(verified.payload);
   if (!envelopeType.success) {
-    reportSlackRejection("invalid_envelope", 400, options.signingSecret);
+    reportSlackRejection("invalid_envelope", 400, [options.signingSecret]);
     return new Response("Bad Request", { status: 400 });
   }
 
   if (envelopeType.data.type === "url_verification") {
     const challenge = SlackUrlVerificationSchema.safeParse(verified.payload);
     if (!challenge.success || !matchesConfiguredApp(challenge.data.api_app_id, options.appId)) {
-      reportSlackRejection("invalid_url_verification", 400, options.signingSecret);
+      reportSlackRejection("invalid_url_verification", 400, [options.signingSecret]);
       return new Response("Bad Request", { status: 400 });
     }
     return Response.json({ challenge: challenge.data.challenge });
@@ -115,7 +155,7 @@ async function handleVerifiedSlackRequest(
     return new Response("OK", { status: 200 });
   } catch (error) {
     if (error instanceof SlackEventIntakeValidationError) {
-      reportSlackRejection("invalid_callback", 400, options.signingSecret);
+      reportSlackRejection("invalid_callback", 400, [options.signingSecret]);
       return new Response("Bad Request", { status: 400 });
     }
     reportFailure(
@@ -135,7 +175,7 @@ async function handleVerifiedSlackRequest(
 function reportSlackRejection(
   reason: string,
   status: number,
-  signingSecret: string,
+  signingSecrets: readonly string[],
   signature?: string,
 ): void {
   reportFailure(
@@ -144,7 +184,7 @@ function reportSlackRejection(
     {
       status,
       kind: status === 401 ? "authentication" : "validation",
-      scrubValues: [signingSecret, ...(signature === undefined ? [] : [signature])],
+      scrubValues: [...signingSecrets, ...(signature === undefined ? [] : [signature])],
     },
   );
 }

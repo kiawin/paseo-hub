@@ -10,7 +10,7 @@ import type {
   GitHubCreatedReaction,
   GitHubReactionClient,
 } from "../../triggers/github/provider.js";
-import type { SlackBotClient } from "../../triggers/slack/client.js";
+import type { SlackBotClient, SlackThreadReadResult } from "../../triggers/slack/client.js";
 import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type { HubBundleFile } from "../../config/bundle.js";
@@ -298,17 +298,96 @@ export class BrowserDiscordBot extends MemoryDiscordBotClient {
   }
 }
 
+/** One call Hub made to Slack as a bot, and the Slack connection (so the app's bot) it used. */
+export interface BrowserSlackCall {
+  method:
+    | "sendMessage"
+    | "addReaction"
+    | "removeReaction"
+    | "readThreadMessages"
+    | "lookupUserName";
+  connectionId: string;
+  channelId?: string | undefined;
+  threadTs?: string | undefined;
+  userId?: string | undefined;
+}
+
+/**
+ * Slack's side of every bot call. It answers like a quiet workspace and records each call with the
+ * connection it was made through, so a journey can show that a run acted as its own app's bot.
+ */
 export class BrowserSlackBot implements SlackBotClient {
-  sendMessage(): Promise<void> {
+  readonly calls: BrowserSlackCall[] = [];
+
+  sendMessage(input: { connectionId: string; channelId: string; threadTs: string }): Promise<void> {
+    this.calls.push({
+      method: "sendMessage",
+      connectionId: input.connectionId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+    });
     return Promise.resolve();
   }
 
-  addReaction(): Promise<void> {
+  addReaction(input: {
+    connectionId: string;
+    channelId: string;
+    messageTs: string;
+  }): Promise<void> {
+    this.calls.push({
+      method: "addReaction",
+      connectionId: input.connectionId,
+      channelId: input.channelId,
+    });
     return Promise.resolve();
   }
 
-  removeReaction(): Promise<void> {
+  removeReaction(input: {
+    connectionId: string;
+    channelId: string;
+    messageTs: string;
+  }): Promise<void> {
+    this.calls.push({
+      method: "removeReaction",
+      connectionId: input.connectionId,
+      channelId: input.channelId,
+    });
     return Promise.resolve();
+  }
+
+  /** A thread with one earlier message in it, so a mention in a thread has history to read. */
+  readThreadMessages(input: {
+    connectionId: string;
+    channelId: string;
+    threadTs: string;
+  }): Promise<SlackThreadReadResult> {
+    this.calls.push({
+      method: "readThreadMessages",
+      connectionId: input.connectionId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+    });
+    return Promise.resolve({
+      messages: [
+        {
+          ts: input.threadTs,
+          createdAt: "2023-11-14T22:13:20.000Z",
+          content: "The first message in the thread.",
+          author: { id: "U1" },
+          attachments: [],
+        },
+      ],
+      complete: true,
+    });
+  }
+
+  lookupUserName(input: { connectionId: string; userId: string }): Promise<string | undefined> {
+    this.calls.push({
+      method: "lookupUserName",
+      connectionId: input.connectionId,
+      userId: input.userId,
+    });
+    return Promise.resolve("browser-user");
   }
 }
 

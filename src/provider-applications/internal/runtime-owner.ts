@@ -23,16 +23,29 @@ import type {
 import { parseProviderApplicationConfiguration } from "./store.js";
 import type { SlackIntakeHealth, SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
+import { routeSlackWebhookRequest } from "../../triggers/slack/webhook.js";
 
-interface Slot {
-  active: ActiveRegistration | undefined;
-  identity: ProviderApplicationIdentity | undefined;
+/**
+ * One provider's runtime. Trigger resources and the source handler belong to the provider, so an app
+ * prepared after startup gets them. Slack runs one slot per app; every other provider runs one app,
+ * so publishing its app retires any other.
+ */
+interface ProviderState {
+  slots: Map<string, Slot>;
   triggerResources: TriggerProviderResources | undefined;
   handler: TriggerHandler | undefined;
 }
 
+interface Slot {
+  active: ActiveRegistration | undefined;
+  identity: ProviderApplicationIdentity | undefined;
+}
+
 interface ActiveRegistration {
   provider: Provider;
+  applicationId: string;
+  /** The settings it was built from; a Slack webhook app's signing secret routes its requests. */
+  configuration: ProviderApplicationConfiguration;
   registration: ProviderRegistration;
   triggers: readonly TriggerProvider[];
   sourcesStarted: boolean;
@@ -79,11 +92,11 @@ interface DynamicProviderRuntimeOptions {
 
 /** @package */
 export class DynamicProviderRuntime implements ProviderRuntimeOwner {
-  private readonly slots = new Map<Provider, Slot>([
-    ["github", emptySlot()],
-    ["slack", emptySlot()],
-    ["discord", emptySlot()],
-    ["linear", emptySlot()],
+  private readonly providers = new Map<Provider, ProviderState>([
+    ["github", emptyState()],
+    ["slack", emptyState()],
+    ["discord", emptyState()],
+    ["linear", emptyState()],
   ]);
   private readonly stable = new Map<Provider, ProviderRegistration>();
   private slackInstallationHandler: SlackInstallationHandler | undefined;
@@ -104,14 +117,29 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     ];
   }
 
-  identity(provider: Provider): ProviderApplicationIdentity | undefined {
-    return this.slot(provider).identity;
+  /** One app's identity; without an app id, the provider's first published app. */
+  identity(provider: Provider, applicationId?: string): ProviderApplicationIdentity | undefined {
+    const state = this.state(provider);
+    if (applicationId !== undefined) return state.slots.get(applicationId)?.identity;
+    return state.slots.values().next().value?.identity;
   }
 
-  slackDelivery():
-    | { status(): SlackDeliveryStatus; retry(): Promise<void>; intake(): SlackIntakeHealth }
-    | undefined {
-    return this.slot("slack").active?.registration.slackDelivery;
+  /** Socket Mode delivery of every published Slack app, one entry per app. */
+  slackDeliveries(): readonly {
+    applicationId: string;
+    status(): SlackDeliveryStatus;
+    retry(): Promise<void>;
+    intake(): SlackIntakeHealth;
+  }[] {
+    return [...this.state("slack").slots].flatMap(([applicationId, slot]) => {
+      const delivery = slot.active?.registration.slackDelivery;
+      return delivery === undefined ? [] : [{ applicationId, ...delivery }];
+    });
+  }
+
+  /** Every published Slack app's intake health, in app order, for `/health/slack`. */
+  slackIntakes(): readonly SlackIntakeHealth[] {
+    return this.slackDeliveries().map((delivery) => delivery.intake());
   }
 
   onSlackInstallation(
@@ -144,10 +172,12 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       configurationVersion,
       activation,
     );
-    const slot = this.slot(provider);
-    const triggerResources = slot.triggerResources;
+    const state = this.state(provider);
+    const triggerResources = state.triggerResources;
     const active: ActiveRegistration = {
       provider,
+      applicationId: identity.id,
+      configuration,
       registration,
       triggers:
         triggerResources === undefined
@@ -164,8 +194,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     let published = false;
     return {
       start: async () => {
-        if (slot.handler === undefined) return;
-        await startSources(active, slot.handler);
+        if (state.handler === undefined) return;
+        await startSources(active, state.handler);
       },
       beginConnection: async (request) => {
         const response = await registration.connection.actions["start"]?.(request);
@@ -180,26 +210,36 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         return { url };
       },
       publish: () => {
-        const previous = slot.active;
-        if (previous !== undefined) previous.acceptingEvents = false;
-        slot.active = active;
-        slot.identity = identity;
+        // A new version replaces the same app; every provider but Slack runs only one app.
+        const replaced = [...state.slots].filter(
+          ([applicationId]) => applicationId === identity.id || provider !== "slack",
+        );
+        for (const [applicationId] of replaced) {
+          if (applicationId !== identity.id) state.slots.delete(applicationId);
+        }
+        state.slots.set(identity.id, { active, identity });
         active.acceptingEvents = true;
         published = true;
-        if (previous !== undefined) {
-          previous.retiring = true;
-          void stopSources(previous).catch((error: unknown) => {
-            reportFailure(error, {
-              operation: "provider_runtime.retire_inbound",
-              component: "provider_runtime",
-              provider,
-            });
-          });
-          void this.retireWhenDrained(provider, previous);
+        for (const [, previous] of replaced) {
+          if (previous.active === undefined) continue;
+          this.retireReplaced(previous.active);
         }
       },
       close: () => (published ? Promise.resolve() : stopSources(active)),
     };
+  }
+
+  private retireReplaced(previous: ActiveRegistration): void {
+    previous.acceptingEvents = false;
+    previous.retiring = true;
+    void stopSources(previous).catch((error: unknown) => {
+      reportFailure(error, {
+        operation: "provider_runtime.retire_inbound",
+        component: "provider_runtime",
+        provider: previous.provider,
+      });
+    });
+    void this.retireWhenDrained(previous);
   }
 
   private build(
@@ -308,25 +348,41 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   }
 
   private stableRegistration(provider: Provider): ProviderRegistration {
-    const slot = this.slot(provider);
+    const state = this.state(provider);
+    // Every provider but Slack runs one app, so each call goes to it. A Slack call goes to the app
+    // it names, and fails when it names none or that app is not running.
+    const select = (applicationId: string | undefined): ActiveRegistration | undefined =>
+      provider === "slack"
+        ? namedSlackRegistration(state, applicationId)
+        : state.slots.values().next().value?.active;
     const source: TriggerSource = {
       start: async (handler) => {
-        slot.handler = handler;
-        if (slot.active !== undefined) await startSources(slot.active, handler);
+        state.handler = handler;
+        for (const active of activeRegistrations(state)) await startSources(active, handler);
       },
       stop: async () => {
-        slot.handler = undefined;
-        if (slot.active !== undefined) {
-          slot.active.acceptingEvents = false;
-          await stopSources(slot.active);
-        }
+        state.handler = undefined;
+        const results = await Promise.allSettled(
+          activeRegistrations(state).map((active) => {
+            active.acceptingEvents = false;
+            return stopSources(active);
+          }),
+        );
+        const rejected = results.find((result) => result.status === "rejected");
+        if (rejected?.status === "rejected") throw rejected.reason;
       },
     };
     const connectionActions = Object.fromEntries(
       actionNames(provider).map((action) => [
         action,
         async (request: Request) => {
-          const active = await this.registrationForAction(provider, slot, action, request);
+          let active: ActiveRegistration | undefined;
+          try {
+            active = await this.registrationForAction(provider, state, action, request);
+          } catch (error) {
+            if (!(error instanceof ProviderRuntimeUnavailableError)) throw error;
+            return Response.json({ error: error.code }, { status: 409 });
+          }
           if (active === undefined) {
             return Response.json({ error: "provider_not_configured" }, { status: 409 });
           }
@@ -342,10 +398,15 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return {
       connection: {
         name: provider,
-        status: (connections) =>
-          slot.active?.registration.connection.status(connections) ?? {
-            status: "notConfigured" as const,
-          },
+        status: (connections) => {
+          const actives = activeRegistrations(state);
+          const status = aggregateStatus(
+            actives.map((active) => active.registration.connection.status(connections)),
+          );
+          return provider === "slack" && isRecord(status)
+            ? { ...status, applications: connectableSlackApplications(actives) }
+            : status;
+        },
         actions: connectionActions,
       },
       ...(provider === "github"
@@ -354,7 +415,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               resolve: (
                 ...args: Parameters<NonNullable<ProviderRegistration["integration"]>["resolve"]>
               ) => {
-                const active = slot.active;
+                const active = select(undefined);
                 const integration = active?.registration.integration;
                 if (active === undefined || integration === undefined) {
                   throw unavailable("github_integration_unavailable");
@@ -369,7 +430,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                     >["mint"]
                   >[0],
                 ) => {
-                  const active = slot.active;
+                  const active = select(undefined);
                   const authority = active?.registration.integration?.githubAuthority;
                   if (active === undefined || authority === undefined) {
                     throw unavailable("github_authority_unavailable");
@@ -377,7 +438,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                   return this.withLease(active, () => authority.mint(input));
                 },
                 revoke: (token: string) => {
-                  const active = slot.active;
+                  const active = select(undefined);
                   const authority = active?.registration.integration?.githubAuthority;
                   if (active === undefined || authority === undefined) {
                     throw unavailable("github_authority_unavailable");
@@ -390,13 +451,13 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         : {}),
       triggerProviders: [
         (resources) => {
-          slot.triggerResources = resources;
-          if (slot.active !== undefined) {
-            slot.active.triggers = slot.active.registration.triggerProviders
+          state.triggerResources = resources;
+          for (const active of activeRegistrations(state)) {
+            active.triggers = active.registration.triggerProviders
               .map((factory) => factory(resources))
               .filter((trigger): trigger is TriggerProvider => trigger !== undefined);
           }
-          return this.dynamicTrigger(provider, slot);
+          return this.dynamicTrigger(provider, select);
         },
       ],
       sources: [source],
@@ -405,13 +466,19 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           type: `${provider}.reply`,
           tool: replyOutputTool,
           available: (context) => {
-            const output = slot.active?.registration.outputs.find(
+            let active: ActiveRegistration | undefined;
+            try {
+              active = select(applicationIdOf(context));
+            } catch {
+              return false;
+            }
+            const output = active?.registration.outputs.find(
               (candidate) => candidate.type === `${provider}.reply`,
             );
             return output !== undefined && (output.available?.(context) ?? true);
           },
           execute: (input) => {
-            const active = slot.active;
+            const active = select(applicationIdOf(input.outputContext));
             const output = active?.registration.outputs.find(
               (candidate) => candidate.type === `${provider}.reply`,
             );
@@ -429,7 +496,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               {
                 name: provider === "github" ? "webhook" : `${provider}.events`,
                 handle: (request) => {
-                  const active = slot.active;
+                  if (provider === "slack") return this.routeSlackEvents(state, request);
+                  const active = state.slots.values().next().value?.active;
                   const handler = active?.registration.requests[0];
                   return active === undefined || handler === undefined
                     ? Promise.resolve(new Response("Not Found", { status: 404 }))
@@ -442,7 +510,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
             attachment: {
               provider,
               resolve: (input) => {
-                const active = slot.active;
+                const active = select(applicationIdOf(input.locator));
                 const attachment = active?.registration.attachment;
                 if (active === undefined || attachment === undefined) {
                   throw unavailable(`${provider}_attachment_unavailable`);
@@ -455,50 +523,66 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     };
   }
 
-  private slot(provider: Provider): Slot {
-    const slot = this.slots.get(provider);
-    if (slot === undefined) throw new Error(`unknown provider: ${provider}`);
-    return slot;
+  private state(provider: Provider): ProviderState {
+    const state = this.providers.get(provider);
+    if (state === undefined) throw new Error(`unknown provider: ${provider}`);
+    return state;
   }
 
-  private dynamicTrigger(provider: Provider, slot: Slot): TriggerProvider {
-    const current = () => {
-      const active = slot.active;
+  private dynamicTrigger(
+    provider: Provider,
+    select: (applicationId: string | undefined) => ActiveRegistration | undefined,
+  ): TriggerProvider {
+    // A Slack event names its app; every later hook finds it in the contexts the match produced.
+    const current = (...contexts: unknown[]) => {
+      const active = select(applicationIdOf(...contexts));
       const trigger = active?.triggers[0];
       if (active === undefined || trigger === undefined) {
         throw unavailable(`${provider}_trigger_unavailable`);
       }
       return { active, trigger };
     };
-    const invoke = <T>(operation: (trigger: TriggerProvider) => Promise<T>) => {
-      const selected = current();
+    const invoke = <T>(
+      contexts: readonly unknown[],
+      operation: (trigger: TriggerProvider) => Promise<T>,
+    ) => {
+      const selected = current(...contexts);
       return this.withLease(selected.active, () => operation(selected.trigger));
     };
     return {
       name: provider,
       eventNames: eventNames(provider),
       match: async (external) => {
-        const selected = current();
+        const selected = current({ applicationId: payloadApplicationId(external.payload) });
         return this.withLease(selected.active, () => selected.trigger.match(external));
       },
       materializeLaunch: (input) =>
-        invoke((trigger) => trigger.materializeLaunch?.(input) ?? Promise.resolve({})),
+        invoke(
+          [input.triggerContext],
+          (trigger) => trigger.materializeLaunch?.(input) ?? Promise.resolve({}),
+        ),
       materializeContext: (input) =>
-        invoke((trigger) => trigger.materializeContext?.(input) ?? Promise.resolve(undefined)),
+        invoke(
+          [input.triggerContext],
+          (trigger) => trigger.materializeContext?.(input) ?? Promise.resolve(undefined),
+        ),
       onDispatchAccepted: (triggerContext, outputContext, reactionState) =>
         invoke(
+          [outputContext, triggerContext],
           (trigger) =>
             trigger.onDispatchAccepted?.(triggerContext, outputContext, reactionState) ??
             Promise.resolve(),
         ),
       onAgentExecutionStarted: (triggerContext, outputContext, reactionState) =>
         invoke(
+          [outputContext, triggerContext],
           (trigger) =>
             trigger.onAgentExecutionStarted?.(triggerContext, outputContext, reactionState) ??
             Promise.resolve(),
         ),
       onAgentExecutionCompleted: (triggerContext, outputContext, result, reactionState) =>
         invoke(
+          [outputContext, triggerContext],
           (trigger) =>
             trigger.onAgentExecutionCompleted?.(
               triggerContext,
@@ -509,6 +593,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         ),
       onAgentExecutionFailed: (triggerContext, outputContext, reason, reactionState) =>
         invoke(
+          [outputContext, triggerContext],
           (trigger) =>
             trigger.onAgentExecutionFailed?.(
               triggerContext,
@@ -519,11 +604,13 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         ),
       onAgentExecutionTerminal: (executionId, triggerContext) =>
         invoke(
+          [triggerContext],
           (trigger) =>
             trigger.onAgentExecutionTerminal?.(executionId, triggerContext) ?? Promise.resolve(),
         ),
       onMachineTerminated: (triggerContext, reason, reactionState) =>
         invoke(
+          [triggerContext],
           (trigger) =>
             trigger.onMachineTerminated?.(triggerContext, reason, reactionState) ??
             Promise.resolve(),
@@ -538,39 +625,101 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     } finally {
       active.leases -= 1;
       if (active.retiring) {
-        void this.retireWhenDrained(active.provider, active);
+        void this.retireWhenDrained(active);
       }
     }
   }
 
-  private retireWhenDrained(provider: Provider, active: ActiveRegistration): Promise<void> {
+  private retireWhenDrained(active: ActiveRegistration): Promise<void> {
     if (active.leases > 0) return Promise.resolve();
-    active.retirement ??= retire(provider, active);
+    active.retirement ??= retire(active);
     return active.retirement;
+  }
+
+  /**
+   * Every Slack webhook app shares one events URL, so a request goes to the app whose signing
+   * secret verifies it. Socket Mode apps take no requests.
+   */
+  private routeSlackEvents(state: ProviderState, request: Request): Promise<Response> {
+    const apps = activeRegistrations(state).flatMap((active) => {
+      const handler = active.registration.requests[0];
+      const configuration = active.configuration;
+      if (
+        handler === undefined ||
+        configuration.provider !== "slack" ||
+        configuration.transport !== "webhook"
+      ) {
+        return [];
+      }
+      return [
+        {
+          signingSecret: configuration.signingSecret,
+          handle: (verified: Request) => this.withLease(active, () => handler.handle(verified)),
+        },
+      ];
+    });
+    if (apps.length === 0) return Promise.resolve(new Response("Not Found", { status: 404 }));
+    return routeSlackWebhookRequest(request, apps);
+  }
+
+  /**
+   * The registration that starts or disconnects a connection. A Slack start names its app, or uses
+   * the only one. A disconnect always goes to the connection's own app, whose client revokes its
+   * token; a Socket Mode app has no client to do that, so an `applicationId` in the URL is ignored.
+   */
+  private async connectionActionRegistration(
+    provider: Provider,
+    state: ProviderState,
+    action: string,
+    url: URL,
+  ): Promise<ActiveRegistration | undefined> {
+    const first = state.slots.values().next().value?.active;
+    if (provider !== "slack") return first;
+    if (action !== "disconnect") {
+      return slackRegistration(state, url.searchParams.get("applicationId") ?? undefined);
+    }
+    const connectionId = url.searchParams.get("connectionId");
+    const owner =
+      connectionId === null || !UUID.test(connectionId)
+        ? undefined
+        : await this.options.database.findSlackConnectionApplicationId(connectionId);
+    // No such connection: any registration refuses it after checking the caller's access. A
+    // connection with no app on its row goes to the only active app.
+    if (owner === undefined) return first;
+    return slackRegistration(state, owner ?? undefined);
   }
 
   private async registrationForAction(
     provider: Provider,
-    slot: Slot,
+    providerState: ProviderState,
     action: string,
     request: Request,
   ): Promise<ActiveRegistration | undefined> {
-    if (action !== "callback" && action !== "setup") return slot.active;
-    const state = new URL(request.url).searchParams.get("state");
-    if (state === null) return slot.active;
+    const first = providerState.slots.values().next().value?.active;
+    const url = new URL(request.url);
+    if (action !== "callback" && action !== "setup") {
+      return this.connectionActionRegistration(provider, providerState, action, url);
+    }
+    const state = url.searchParams.get("state");
+    if (state === null) return first;
     const snapshot = await this.options.database.findConnectionAttemptConfiguration(
       createHash("sha256").update(state).digest("hex"),
     );
-    if (snapshot === undefined) return slot.active;
+    if (snapshot === undefined) return first;
+    // The callback belongs to the app its attempt was started for.
+    const current =
+      snapshot.providerApplicationId === null
+        ? first
+        : providerState.slots.get(snapshot.providerApplicationId)?.active;
     const existing =
-      slot.active?.registration.configurationSnapshot?.version === snapshot.configurationVersion &&
-      slot.active.registration.configurationSnapshot.callbackOrigin === snapshot.callbackOrigin
-        ? slot.active
+      current?.registration.configurationSnapshot?.version === snapshot.configurationVersion &&
+      current.registration.configurationSnapshot.callbackOrigin === snapshot.callbackOrigin
+        ? current
         : undefined;
     if (existing !== undefined) return existing;
     try {
       const configuration = parseProviderApplicationConfiguration(snapshot.configurationSnapshot);
-      if (configuration.provider !== provider) return slot.active;
+      if (configuration.provider !== provider) return first;
       const registration = this.build(
         provider,
         configuration,
@@ -583,6 +732,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       );
       const restored: ActiveRegistration = {
         provider,
+        applicationId: snapshot.providerApplicationId ?? "",
+        configuration,
         registration,
         triggers: [],
         sourcesStarted: false,
@@ -598,18 +749,104 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         component: "provider_runtime",
         provider,
       });
-      return slot.active;
+      return first;
     }
   }
 }
 
-function emptySlot(): Slot {
-  return {
-    active: undefined,
-    identity: undefined,
-    triggerResources: undefined,
-    handler: undefined,
+/** The running Slack app a context or event names; one that names none has nowhere to go. */
+function namedSlackRegistration(
+  state: ProviderState,
+  applicationId: string | undefined,
+): ActiveRegistration {
+  if (applicationId === undefined) throw unavailable("slack_application_required");
+  return slackRegistration(state, applicationId);
+}
+
+/**
+ * The Slack registration an operator action belongs to. An action that names no app goes to the
+ * only active app, and is refused when several run.
+ */
+function slackRegistration(
+  state: ProviderState,
+  applicationId: string | undefined,
+): ActiveRegistration {
+  if (applicationId !== undefined) {
+    const active = state.slots.get(applicationId)?.active;
+    if (active === undefined) throw unavailable("provider_not_configured");
+    return active;
+  }
+  const actives = activeRegistrations(state);
+  if (actives.length === 1) return actives[0]!;
+  throw unavailable(
+    actives.length === 0 ? "provider_not_configured" : "slack_application_required",
+  );
+}
+
+/**
+ * The Slack apps a workspace can be connected to from a project: the webhook apps, which install
+ * through Slack's OAuth. A Socket Mode app is connected by the bot token saved with it.
+ */
+function connectableSlackApplications(actives: readonly ActiveRegistration[]): string[] {
+  return actives.flatMap((active) =>
+    active.configuration.provider === "slack" && active.configuration.transport === "webhook"
+      ? [active.applicationId]
+      : [],
+  );
+}
+
+/** The app id the first of these contexts records, directly or on its Slack `target`. */
+function applicationIdOf(...contexts: unknown[]): string | undefined {
+  for (const context of contexts) {
+    if (!isRecord(context)) continue;
+    const direct = nonEmptyString(context["applicationId"]);
+    if (direct !== undefined) return direct;
+    const target = context["target"];
+    const nested = isRecord(target) ? nonEmptyString(target["applicationId"]) : undefined;
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+/** A normalized Slack event names the app that received it. */
+function payloadApplicationId(payload: unknown): string | undefined {
+  return isRecord(payload) ? nonEmptyString(payload["appId"]) : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+const STATUS_RANK = ["requiresReauthorization", "connected", "disconnected", "notConfigured"];
+
+/** One status for a provider's apps: the one most in need of attention among the configured. */
+function aggregateStatus(statuses: readonly unknown[]): unknown {
+  const rank = (status: unknown) => {
+    const value = isRecord(status) ? nonEmptyString(status["status"]) : undefined;
+    const index = STATUS_RANK.indexOf(value ?? "");
+    return index === -1 ? 0 : index;
   };
+  return (
+    statuses.toSorted((left, right) => rank(left) - rank(right))[0] ?? {
+      status: "notConfigured" as const,
+    }
+  );
+}
+
+function emptyState(): ProviderState {
+  return { slots: new Map(), triggerResources: undefined, handler: undefined };
+}
+
+function activeRegistrations(state: ProviderState): ActiveRegistration[] {
+  return [...state.slots.values()].flatMap((slot) =>
+    slot.active === undefined ? [] : [slot.active],
+  );
 }
 
 function actionNames(provider: Provider): readonly string[] {
@@ -662,13 +899,17 @@ async function stopSources(active: ActiveRegistration): Promise<void> {
   if (rejected?.status === "rejected") throw rejected.reason;
 }
 
-async function retire(provider: Provider, active: ActiveRegistration): Promise<void> {
+async function retire(active: ActiveRegistration): Promise<void> {
   try {
     await stopSources(active);
   } catch (error) {
     reportFailure(
       error,
-      { operation: "provider_runtime.retire", component: "provider_runtime", provider },
+      {
+        operation: "provider_runtime.retire",
+        component: "provider_runtime",
+        provider: active.provider,
+      },
       { logger, kind: "internal" },
     );
   }

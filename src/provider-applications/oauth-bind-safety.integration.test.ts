@@ -52,11 +52,62 @@ describe("provider application OAuth bind authority", () => {
   );
 });
 
+describe("fresh provider configuration from an OAuth callback", () => {
+  it.each(["PGlite", "PostgreSQL"] as const)(
+    "stores a fresh Linear configuration under its client id in %s",
+    async (engine) => {
+      const fixture = await databaseFixture(engine);
+      try {
+        await seedAuthority(fixture.bundle);
+        const database = createDatabase(fixture.bundle.runtime, fixture.bundle.locks);
+        const linear = application("linear", "FRESH");
+        await database.startConnectionAttempt({
+          provider: "linear",
+          stateVerifier: "linear-fresh",
+          access: START_ACCESS,
+          lifetimeMinutes: 10,
+          configurationVersion: 1,
+          providerApplicationId: linear.identity.id,
+          callbackOrigin: "https://hub.example.test",
+          configurationSnapshot: linear.configuration,
+          expectedConfigurationVersion: null,
+          activateConfiguration: true,
+        });
+        await database.completeLinearProviderApplication({
+          stateVerifier: "linear-fresh",
+          access: CALLBACK_ACCESS,
+          providerApplicationId: linear.identity.id,
+          phase: "linear_authorization",
+          linearOrganizationId: "linear-organization",
+          linearOrganizationName: "Acme",
+          appUserId: "linear-app-user",
+          accessToken: "linear-token",
+          refreshToken: "linear-refresh-token",
+          scopes: ["read", "comments:create"],
+          providerConfiguration: {
+            configuration: linear.configuration,
+            identity: linear.identity,
+            expectedVersion: undefined,
+            updatedByUserId: "operator",
+          },
+        });
+        const stored = await fixture.bundle.runtime.query<{ application_id: string }>(
+          `select application_id from runtime_provider_configuration where provider = 'linear'`,
+        );
+        assert.deepEqual(stored.rows, [{ application_id: "linear-client-FRESH" }]);
+      } finally {
+        await fixture.close();
+      }
+    },
+    120_000,
+  );
+});
+
 async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider: Provider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
   const first = application(provider, "A");
-  const replacement = application(provider, "B");
+  const replacement = replacementOf(provider, first, "B");
   await store.save({
     provider,
     configuration: first.configuration,
@@ -98,7 +149,7 @@ async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider
   const database = createDatabase(bundle.runtime, bundle.locks);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
   const first = application(provider, "RACE-A");
-  const replacement = application(provider, "RACE-B");
+  const replacement = replacementOf(provider, first, "RACE-B");
   await store.save({
     provider,
     configuration: first.configuration,
@@ -119,6 +170,18 @@ async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider
     bind(database, provider, state, first.identity.id),
   ]);
 
+  if (provider === "slack") {
+    // Rotating one Slack app's settings keeps its connections, so the save always lands; the bind
+    // lands only when it ran before the save, against the version it was started for.
+    assert.equal(saved.status, "fulfilled");
+    assert.equal((await store.read(provider, first.identity.id))?.version, 2);
+    assert.equal(
+      await connectionApplicationId(bundle, provider),
+      bound.status === "fulfilled" ? first.identity.id : undefined,
+    );
+    await assertAttemptConsumed(bundle, state, bound.status === "fulfilled");
+    return;
+  }
   assert.equal([saved, bound].filter((result) => result.status === "fulfilled").length, 1);
   if (saved.status === "fulfilled") {
     assert.equal(await connectionApplicationId(bundle, provider), undefined);
@@ -342,6 +405,27 @@ async function resetProvider(bundle: DatabaseRuntimeBundle, provider: Provider):
   await bundle.runtime.query(`delete from runtime_provider_configuration where provider = $1`, [
     provider,
   ]);
+  await bundle.runtime.query(`delete from runtime_provider_activation where provider = $1`, [
+    provider,
+  ]);
+}
+
+/**
+ * The settings that replace an app's current ones. Saving another Slack app adds a second app, so a
+ * Slack replacement is a new version of the same app; every other provider replaces its one app.
+ */
+function replacementOf(
+  provider: Provider,
+  first: ReturnType<typeof application>,
+  suffix: string,
+): ReturnType<typeof application> {
+  if (provider !== "slack" || first.configuration.provider !== "slack") {
+    return application(provider, suffix);
+  }
+  return {
+    configuration: { ...first.configuration, clientSecret: `slack-secret-${suffix}` },
+    identity: first.identity,
+  };
 }
 
 async function seedAuthority(bundle: DatabaseRuntimeBundle): Promise<void> {

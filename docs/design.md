@@ -127,7 +127,7 @@ missing app component.
 | Component                                                               | The one way to                                                                      |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `Page`, `PageHeader`, `PageHeaderSkeleton`                              | Lay out a screen: the column, the one `h1`, its description, status, and actions.   |
-| `Section`                                                               | Group content under a quiet heading with an optional trailing action.               |
+| `Section`                                                               | Group content under a quiet heading with an optional status and trailing action.    |
 | `Card`, `CardSkeleton`                                                  | Put content in a bordered surface. Icon, title, description, and action optional.   |
 | `Steps`                                                                 | Number a run of cards in order and join them with a rail.                           |
 | `DataTable`, `DataRow`, `DataCell`, `DataTableSkeleton`                 | List records at page level, in columns.                                             |
@@ -154,6 +154,7 @@ missing app component.
 | `CopyField`, `CopyButton`, `CopyBlock`, `CodeBlock`                     | Show a value to copy, or a block of code.                                           |
 | `Disclosure`                                                            | Open and close a bordered section.                                                  |
 | `RowActions`                                                            | Put a record's actions behind one kebab.                                            |
+| `ActionMenu`                                                            | One action with a choice of target, such as which app to connect.                   |
 | `RelativeTime`                                                          | Show when. There is no absolute-date formatter in screens.                          |
 | `AuthLayout`, `AuthCard`, `AuthCardSkeleton`                            | Frame a pre-auth screen.                                                            |
 | `SiteHeader`, `SiteHeaderActions`, `SidebarSwitcher`, `NavigationGroup` | The shell, in `src/shell`. Header actions render from `sm` up only.                 |

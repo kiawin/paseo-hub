@@ -38,6 +38,7 @@ import {
   BrowserProviderApplicationVerifier,
   BrowserSlackSocketFixture,
   browserRegistrationFactory,
+  FIXTURE_APP_CREDENTIALS,
 } from "./browser-provider-applications.js";
 import {
   activateProviderApplicationsAtStartup,
@@ -54,6 +55,7 @@ import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 import { compileHubConfig, compiledConfigurationHash } from "../../config/compiler.js";
 import { ProjectConfigurationStore } from "../../configuration/store.js";
 import type { HubBundleFile } from "../../config/bundle.js";
+import type { SlackIntakeHealth } from "../../triggers/slack/source/index.js";
 import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
 
 interface DiscordCommand {
@@ -64,8 +66,14 @@ interface DiscordCommand {
 
 interface SlackSocketCommand {
   id: string;
-  type: "slack-socket-prepare" | "slack-socket-deliver" | "slack-socket-inspect";
+  type:
+    | "slack-socket-prepare"
+    | "slack-socket-deliver"
+    | "slack-socket-inspect"
+    | "slack-bot-calls";
   eventId?: string;
+  /** The fixture Slack app the mention is for; the first app when absent. */
+  appId?: string;
 }
 
 interface GitHubConfigurationCommand {
@@ -332,6 +340,7 @@ async function main(): Promise<void> {
   process.on("message", (message: unknown) => {
     void acceptCommand(message, {
       bot,
+      slackBot,
       slackSocket,
       database,
       databaseRuntime,
@@ -512,6 +521,7 @@ async function seedMachineAuthTargetIfRequired(
 
 interface CommandFixtures {
   bot: BrowserDiscordBot;
+  slackBot: BrowserSlackBot;
   slackSocket: BrowserSlackSocketFixture;
   database: Database;
   databaseRuntime: DatabaseRuntime;
@@ -727,9 +737,13 @@ async function acceptSlackSocketCommand(
       process.send?.({ id: message.id, ok: true });
       return;
     }
+    if (message.type === "slack-bot-calls") {
+      process.send?.({ id: message.id, ok: true, data: fixtures.slackBot.calls });
+      return;
+    }
     if (message.eventId === undefined) throw new Error("Slack event ID is required");
     if (message.type === "slack-socket-deliver") {
-      await fixtures.slackSocket.deliverMention(message.eventId);
+      await fixtures.slackSocket.deliverMention(message.eventId, message.appId);
       process.send?.({ id: message.id, ok: true });
       return;
     }
@@ -737,7 +751,7 @@ async function acceptSlackSocketCommand(
       `select count(distinct receipt.id)::integer receipts, count(run.id)::integer runs
        from provider_event_receipts receipt left join trigger_runs run
        on run.provider_event_receipt_id = receipt.id where receipt.delivery_id = $1`,
-      [`slack-${message.eventId}`],
+      [`slack-${message.appId ?? FIXTURE_APP_CREDENTIALS.slack.appId}-${message.eventId}`],
     );
     process.send?.({ id: message.id, ok: true, data: result.rows[0] });
   } catch (error) {
@@ -749,42 +763,57 @@ async function acceptSlackSocketCommand(
   }
 }
 
+/**
+ * Routes one mention trigger to each Slack connection in the fixture workspace. With one app that
+ * is the one trigger every single-app journey uses; with two, each app's mentions reach only the
+ * trigger routed to its own connection, named after its app.
+ */
 async function prepareSlackSocketWorkflow(
   database: Database,
   runtime: DatabaseRuntime,
 ): Promise<void> {
-  const target = await runtime.query<{
+  const targets = await runtime.query<{
     project_id: string;
     user_id: string;
     connection_id: string;
+    application_id: string | null;
   }>(
-    `select project.id project_id, member.user_id, connection.id connection_id
+    `select distinct on (connection.id) project.id project_id, member.user_id,
+       connection.id connection_id, connection.provider_application_id application_id
      from projects project join member on member.organization_id = project.organization_id
      join slack_connections connection on connection.organization_id = project.organization_id
-     where connection.team_id = 'T-ACME' order by project.id, member.id limit 1`,
+     where connection.team_id = 'T-ACME' order by connection.id, project.id, member.id`,
   );
-  const row = target.rows[0];
-  if (row === undefined) throw new Error("Slack browser workflow target is unavailable");
+  const rows = targets.rows.toSorted((left, right) =>
+    (left.application_id ?? "").localeCompare(right.application_id ?? ""),
+  );
+  const first = rows[0];
+  if (first === undefined) throw new Error("Slack browser workflow target is unavailable");
+  const routes = rows
+    .filter((row) => row.project_id === first.project_id)
+    .map((row) => ({
+      connectionId: row.connection_id,
+      triggerName: `socket-mention-${row.application_id ?? "legacy"}`,
+    }));
   const compiled = compileHubConfig({
     environments: [{ name: "runner", kind: "daemon", daemon: "browser-runner", cwd: "/workspace" }],
-    triggers: [
-      {
-        name: "socket-mention",
-        on: "slack.mention",
-        max_runtime: "5m",
-        filters: { workspace: "T-ACME", channels: ["C1"], from_users: ["U1"] },
-        steps: [
-          {
-            id: "handle",
-            environment: "runner",
-            max_runtime: "2m",
-            idle_timeout: "30s",
-            agent: { provider: "test" },
-            prompt: [{ text: "Handle the Socket Mode mention." }],
-          },
-        ],
-      },
-    ],
+    triggers: routes.map((route) => ({
+      name: route.triggerName,
+      on: "slack.mention",
+      max_runtime: "5m",
+      filters: { workspace: "T-ACME", channels: ["C1"], from_users: ["U1"] },
+      steps: [
+        {
+          id: "handle",
+          environment: "runner",
+          max_runtime: "2m",
+          idle_timeout: "30s",
+          agent: { provider: "test" },
+          // Naming the context is what makes Hub read the Slack thread before the agent starts.
+          prompt: [{ text: "Handle the Socket Mode mention. Context: ${{ paseo.context }}" }],
+        },
+      ],
+    })),
   });
   const configuration = {
     ...compiled,
@@ -795,26 +824,31 @@ async function prepareSlackSocketWorkflow(
     ),
     triggers: compiled.triggers.map((trigger) =>
       Object.assign({}, trigger, {
-        filters: { ...trigger.filters, connectionId: row.connection_id },
+        filters: {
+          ...trigger.filters,
+          connectionId: routes.find((route) => route.triggerName === trigger.name)?.connectionId,
+        },
       }),
     ),
   };
   const revision = await database.insertProjectConfigurationRevision({
-    projectId: row.project_id,
+    projectId: first.project_id,
     sourceKind: "manual",
     sourceEvidence: { kind: "browser-socket-fixture" },
     normalizedConfiguration: configuration,
     contentHash: compiledConfigurationHash(configuration),
-    createdByUserId: row.user_id,
+    createdByUserId: first.user_id,
   });
-  await database.activateProjectConfigurationRevision(row.project_id, revision.id, [
-    {
+  await database.activateProjectConfigurationRevision(
+    first.project_id,
+    revision.id,
+    routes.map((route) => ({
       provider: "slack",
-      connectionId: row.connection_id,
+      connectionId: route.connectionId,
       resourceId: null,
-      triggerName: "socket-mention",
-    },
-  ]);
+      triggerName: route.triggerName,
+    })),
+  );
 }
 
 /** Handle the fixture billing IPC commands (product edit, cancel, seat inspection). Returns true
@@ -1015,12 +1049,16 @@ function isSlackSocketCommand(value: unknown): value is SlackSocketCommand {
   return (
     typeof value === "object" &&
     value !== null &&
-    ["slack-socket-prepare", "slack-socket-deliver", "slack-socket-inspect"].includes(
-      String(Reflect.get(value, "type")),
-    ) &&
+    [
+      "slack-socket-prepare",
+      "slack-socket-deliver",
+      "slack-socket-inspect",
+      "slack-bot-calls",
+    ].includes(String(Reflect.get(value, "type"))) &&
     typeof Reflect.get(value, "id") === "string" &&
     (Reflect.get(value, "eventId") === undefined ||
-      typeof Reflect.get(value, "eventId") === "string")
+      typeof Reflect.get(value, "eventId") === "string") &&
+    (Reflect.get(value, "appId") === undefined || typeof Reflect.get(value, "appId") === "string")
   );
 }
 
@@ -1119,13 +1157,17 @@ async function providerRuntimeOptions(
   registrations: readonly ProviderRegistration[],
   fixtures: Omit<Parameters<typeof composeProviderApplications>[0], "auth">,
 ): Promise<
-  Pick<Parameters<typeof createApplicationRuntime>[0], "registrations"> & {
+  Pick<Parameters<typeof createApplicationRuntime>[0], "registrations" | "slackIntakeHealth"> & {
     providerApplications?: ProviderApplications;
   }
 > {
   const apps = auth === null ? null : await composeProviderApplications({ ...fixtures, auth });
   if (apps !== null) {
-    return { registrations: apps.registrations, providerApplications: apps.capability };
+    return {
+      registrations: apps.registrations,
+      providerApplications: apps.capability,
+      slackIntakeHealth: apps.slackIntakeHealth,
+    };
   }
   if (auth !== null) {
     await activateStaticProviderApplications(fixtures);
@@ -1171,6 +1213,7 @@ async function composeProviderApplications(input: {
 }): Promise<{
   capability: ProviderApplications;
   registrations: readonly ProviderRegistration[];
+  slackIntakeHealth: () => readonly SlackIntakeHealth[];
 } | null> {
   if (process.env["PASEO_BROWSER_PROVIDER_APPS"] !== "dynamic") return null;
   const environment = await readProviderApplicationEnvironment(process.env);
@@ -1210,10 +1253,7 @@ async function composeProviderApplications(input: {
     runtime: providerRuntime,
     verifier,
     slackSocketVerifier: input.slackSocket.verifier(),
-    slackDelivery: {
-      status: () => providerRuntime.slackDelivery()?.status() ?? { state: "stopped" },
-      retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
-    },
+    slackDeliveries: () => providerRuntime.slackDeliveries(),
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
     beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
@@ -1225,7 +1265,12 @@ async function composeProviderApplications(input: {
       return begin(new Request(url, { method: "POST", headers: request.headers }));
     },
   });
-  return { capability, registrations: providerRuntime.registrations() };
+  return {
+    capability,
+    registrations: providerRuntime.registrations(),
+    // As in production, `/health/slack` reads the intake of every Slack app the runtime runs.
+    slackIntakeHealth: () => providerRuntime.slackIntakes(),
+  };
 }
 
 main().catch((error: unknown) => {

@@ -55,6 +55,7 @@ describe("startup project trigger migration", () => {
     assert.match(revision?.yaml ?? "", /legacy_multistep:/u);
     for (const teamId of ["team-a", "team-b"]) {
       const accepted = await database.acceptSlackEvent({
+        providerApplicationId: "A1",
         teamId,
         deliveryId: `delivery-${teamId}`,
         source: "slack.mention",
@@ -201,7 +202,7 @@ function slackConnection(id: string, teamId: string) {
     botUserId: "bot",
     botAccessToken: "test-token",
     scopes: [],
-    providerApplicationId: null,
+    providerApplicationId: "A1",
   };
 }
 

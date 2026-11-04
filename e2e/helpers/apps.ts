@@ -64,6 +64,87 @@ export const SLACK_WEBHOOK_CREDENTIALS = {
   "Signing Secret": "phase-zero-slack-webhook-secret",
 } as const;
 
+/** The second fixture Slack app's Socket Mode tokens: a different bot in the same workspace. */
+export const SECOND_SLACK_SOCKET_CREDENTIALS = {
+  "App-level token": "xapp-browser-fixture-2",
+  "Bot token": "xoxb-browser-fixture-2",
+} as const;
+
+/** The second fixture Slack app as a webhook app, with a signing secret of its own. */
+export const SECOND_SLACK_WEBHOOK_CREDENTIALS = {
+  "App ID": "browser-slack-app-2",
+  "Client ID": "browser-slack-client-2",
+  "Client Secret": "browser-slack-client-secret-2",
+  "Signing Secret": "phase-zero-slack-webhook-secret-2",
+} as const;
+
+/** What Hub has stored for one Slack app: its connection in the workspace, settings, activation. */
+export interface SlackAppState {
+  connection: { slug: unknown; botUserId: unknown; botAccessToken: unknown } | undefined;
+  /** The settings' version and a digest of them, so a change to either shows without secrets. */
+  configuration: { version: unknown; digest: unknown; verifiedAt: unknown } | undefined;
+  activation: { version: unknown } | undefined;
+}
+
+/** Everything Hub persists per Slack app in the fixture workspace, keyed by app id. */
+export async function slackPersistedState(application: {
+  query(sql: string, params?: readonly unknown[]): Promise<Record<string, unknown>[]>;
+}): Promise<Record<string, SlackAppState>> {
+  const [connections, configurations, activations] = await Promise.all([
+    application.query(
+      `select provider_application_id app, slug, bot_user_id, bot_access_token
+       from slack_connections where team_id = 'T-ACME'`,
+    ),
+    application.query(
+      `select application_id app, version, md5(configuration::text) digest, verified_at::text verified
+       from runtime_provider_configuration where provider = 'slack'`,
+    ),
+    application.query(
+      `select provider_application_id app, configuration_version version
+       from runtime_provider_activation where provider = 'slack'`,
+    ),
+  ]);
+  const state: Record<string, SlackAppState> = {};
+  const entry = (app: unknown): SlackAppState =>
+    (state[String(app)] ??= {
+      connection: undefined,
+      configuration: undefined,
+      activation: undefined,
+    });
+  for (const row of connections) {
+    entry(row["app"]).connection = {
+      slug: row["slug"],
+      botUserId: row["bot_user_id"],
+      botAccessToken: row["bot_access_token"],
+    };
+  }
+  for (const row of configurations) {
+    entry(row["app"]).configuration = {
+      version: row["version"],
+      digest: row["digest"],
+      verifiedAt: row["verified"],
+    };
+  }
+  for (const row of activations) entry(row["app"]).activation = { version: row["version"] };
+  return state;
+}
+
+/** Waits for a delivery's receipt and runs, which settle a moment after Slack is acknowledged. */
+export async function expectSlackDelivered(
+  session: {
+    slackSocketEvidence(
+      eventId: string,
+      appId?: string,
+    ): Promise<{ receipts: number; runs: number }>;
+  },
+  eventId: string,
+  appId: string,
+): Promise<void> {
+  await expect
+    .poll(() => session.slackSocketEvidence(eventId, appId), { timeout: 15_000 })
+    .toEqual({ receipts: 1, runs: 1 });
+}
+
 /** The one GitHub value that only exists once the origin can receive deliveries. */
 export const GITHUB_EVENT_CREDENTIALS = { "Webhook secret": "phase-zero-webhook-secret" } as const;
 
@@ -95,6 +176,34 @@ export class AppSection {
 
   status(): Locator {
     return this.page.getByRole("status", { name: `${this.provider} status` });
+  }
+
+  /** One saved Slack app's group in the Slack section, found by the App ID heading it carries. */
+  slackApp(appId: string): Locator {
+    return this.body().locator(`xpath=.//section[*[1]//h2[normalize-space(.)="App ${appId}"]]`);
+  }
+
+  /** The group a new Slack app is set up in, open once "Add Slack app" is pressed. */
+  newSlackApp(): Locator {
+    return this.body().locator(`xpath=.//section[*[1]//h2[normalize-space(.)="New Slack app"]]`);
+  }
+
+  /** What one Slack app's own workflow reports; each app has a region of its own. */
+  slackAppResult(appId: string): Locator {
+    return this.page.getByRole("status", {
+      name: `${this.provider} status for app ${appId}`,
+      exact: true,
+    });
+  }
+
+  /** The pill beside a Slack app's heading: that app's own state, not the section's. */
+  async expectSlackAppStatus(appId: string, status: AppStatus): Promise<void> {
+    await expect(this.slackApp(appId).locator("xpath=./*[1]")).toContainText(status);
+  }
+
+  async addSlackApp(): Promise<void> {
+    await this.action("Add Slack app").click();
+    await expect(this.newSlackApp()).toBeVisible();
   }
 
   /**

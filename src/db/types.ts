@@ -421,6 +421,8 @@ export interface ConnectionAttemptConfigurationSnapshot {
   configurationSnapshot: unknown;
   expectedConfigurationVersion: number | null;
   activateConfiguration: boolean;
+  /** The app the attempt was started for, so a callback is completed by the same app. */
+  providerApplicationId: string | null;
 }
 
 export interface GitHubConnectionRecord {
@@ -650,6 +652,8 @@ export interface AcceptDiscordEventInput extends ProviderEventEvidence {
 }
 
 export interface AcceptSlackEventInput extends ProviderEventEvidence {
+  /** The app that received the event; its connection to the workspace owns the event. */
+  providerApplicationId: string;
   teamId: string;
 }
 
@@ -1653,12 +1657,21 @@ export interface Database {
   ): Promise<DisconnectConnectionResult>;
   findGitHubConnection(installationId: number): Promise<GitHubConnectionRecord | undefined>;
   findDiscordConnection(guildId: string): Promise<DiscordConnectionRecord | undefined>;
-  findSlackConnection(teamId: string): Promise<SlackConnectionRecord | undefined>;
-  findLinearConnection(linearOrganizationId: string): Promise<LinearConnectionRecord | undefined>;
-  findSlackConnectionForOrganization(
-    organizationId: string,
+  /** One Slack app's connection to one workspace; another app may connect the same workspace. */
+  findSlackConnection(
+    applicationId: string,
     teamId: string,
   ): Promise<SlackConnectionRecord | undefined>;
+  findLinearConnection(linearOrganizationId: string): Promise<LinearConnectionRecord | undefined>;
+  findSlackConnectionById(
+    organizationId: string,
+    connectionId: string,
+  ): Promise<SlackConnectionRecord | undefined>;
+  /**
+   * The app a Slack connection belongs to, so its own registration handles it: null for a row from
+   * before apps were recorded, undefined when there is no such connection.
+   */
+  findSlackConnectionApplicationId(connectionId: string): Promise<string | null | undefined>;
   findLinearConnectionForOrganization(
     organizationId: string,
     linearOrganizationId: string,
