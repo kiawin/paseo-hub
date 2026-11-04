@@ -101,25 +101,16 @@ export interface SlackTriggerContext {
 
 export interface SlackOutputContext {
   provider: "slack";
-  /**
-   * The Slack app that received the event, so replies, reactions and attachments use its token.
-   * Absent on contexts recorded before Hub ran several Slack apps.
-   */
-  applicationId?: string;
-  /**
-   * The Slack connection that received the event: its bot token replies, reacts and reads. Absent
-   * on contexts recorded before replies named their connection.
-   */
-  connectionId?: string;
+  /** The Slack app that received the event, so replies, reactions and attachments use its token. */
+  applicationId: string;
+  /** The Slack connection that received the event: its bot token replies, reacts and reads. */
+  connectionId: string;
   organizationId: string;
   teamId: string;
   channelId: string;
   threadTs: string;
   messageTs: string;
 }
-
-/** An output context with the connection its calls are made through. */
-type SlackAddressedTarget = SlackOutputContext & { connectionId: string };
 
 type SlackReactionPhase = "accepted" | "started";
 
@@ -266,7 +257,7 @@ export function createSlackTriggerProvider(options: {
       try {
         history = await options.client.readThreadMessages({
           organizationId: launch.organizationId,
-          connectionId: addressedTarget(launch.triggerContext).connectionId,
+          connectionId: launch.triggerContext.target.connectionId,
           channelId: locator.channel.id,
           threadTs: locator.thread.ts,
           beforeTs: locator.before.ts,
@@ -324,16 +315,11 @@ export function createSlackTriggerProvider(options: {
     },
     async onAgentExecutionStarted(context, _outputContext, reactionState) {
       if (slackReactionPhase(reactionState) === "started") return reactionState;
-      await replaceReaction(
-        options.client,
-        addressedTarget(context),
-        "eyes",
-        "hourglass_flowing_sand",
-      );
+      await replaceReaction(options.client, context.target, "eyes", "hourglass_flowing_sand");
       return { phase: "started" };
     },
     async onAgentExecutionCompleted(context, _outputContext, _result, reactionState) {
-      const target = addressedTarget(context);
+      const target = context.target;
       await removeReactionForPhase(options.client, target, reactionState, "started");
       await addReaction(options.client, target, "white_check_mark");
       return null;
@@ -341,7 +327,7 @@ export function createSlackTriggerProvider(options: {
     async onAgentExecutionFailed(context, _output, reason, reactionState) {
       await failWithNotice(
         options.client,
-        addressedTarget(context),
+        context.target,
         await agentFailureNotice(
           reason,
           context.target.organizationId,
@@ -355,7 +341,7 @@ export function createSlackTriggerProvider(options: {
       if (reason === "launch_failed" || reason === "daemon_disconnected") {
         await failWithNotice(
           options.client,
-          addressedTarget(context),
+          context.target,
           `Paseo agent failed: ${reason}`,
           reactionState,
         );
@@ -364,16 +350,6 @@ export function createSlackTriggerProvider(options: {
       return reactionState;
     },
   };
-}
-
-/**
- * The output context with its connection. A context recorded before it named one falls back to the
- * connection the event was accepted through, which the merge data has always recorded.
- */
-function addressedTarget(context: SlackTriggerContext): SlackAddressedTarget {
-  const connectionId = context.target.connectionId ?? context.event.slack.connection_id;
-  if (connectionId === null) throw new Error("Slack connection is unavailable");
-  return { ...context.target, connectionId };
 }
 
 async function enrichSlackAuthor(
@@ -415,7 +391,7 @@ function needsSlackUsername(
 
 async function removeReactionForPhase(
   client: SlackBotClient,
-  target: SlackAddressedTarget,
+  target: SlackOutputContext,
   reactionState: TriggerProviderReactionState | undefined,
   fallbackPhase?: SlackReactionPhase,
 ): Promise<void> {
@@ -523,7 +499,7 @@ async function registerAttachments(
 
 async function replaceReaction(
   client: SlackBotClient,
-  event: SlackAddressedTarget,
+  event: SlackOutputContext,
   from: string,
   to: string,
 ): Promise<void> {
@@ -533,7 +509,7 @@ async function replaceReaction(
 
 async function failWithNotice(
   client: SlackBotClient,
-  event: SlackAddressedTarget,
+  event: SlackOutputContext,
   reason: string,
   reactionState?: TriggerProviderReactionState,
 ): Promise<void> {
@@ -550,7 +526,7 @@ async function failWithNotice(
 
 async function addReaction(
   client: SlackBotClient,
-  event: SlackAddressedTarget,
+  event: SlackOutputContext,
   name: string,
 ): Promise<void> {
   await client.addReaction({
@@ -564,7 +540,7 @@ async function addReaction(
 
 async function addReactionSafely(
   client: SlackBotClient,
-  event: SlackAddressedTarget,
+  event: SlackOutputContext,
   name: string,
 ): Promise<void> {
   try {
@@ -586,7 +562,7 @@ async function addReactionSafely(
 
 async function removeReactionSafely(
   client: SlackBotClient,
-  event: SlackAddressedTarget,
+  event: SlackOutputContext,
   name: string,
 ): Promise<void> {
   try {

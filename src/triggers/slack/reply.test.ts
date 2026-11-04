@@ -6,7 +6,7 @@ import { createSlackReplyExecutor } from "./reply.js";
 describe("Slack reply output", () => {
   it("posts repeated replies into the same originating thread", async () => {
     const client = new RecordingSlackClient();
-    const execute = createSlackReplyExecutor({ client, connectionForWorkspace: unusedLookup });
+    const execute = createSlackReplyExecutor({ client });
     await execute({
       agentExecutionId: "execution-1",
       toolType: "slack.reply",
@@ -55,7 +55,7 @@ describe("Slack reply output", () => {
 
   it("rejects invalid arguments before calling Slack", async () => {
     const client = new RecordingSlackClient();
-    const execute = createSlackReplyExecutor({ client, connectionForWorkspace: unusedLookup });
+    const execute = createSlackReplyExecutor({ client });
     await assert.rejects(() =>
       execute({
         agentExecutionId: "execution-1",
@@ -74,7 +74,7 @@ describe("Slack reply output", () => {
 
   it("replies through the connection its output context names", async () => {
     const client = new RecordingSlackClient();
-    const execute = createSlackReplyExecutor({ client, connectionForWorkspace: unusedLookup });
+    const execute = createSlackReplyExecutor({ client });
 
     await execute({
       agentExecutionId: "execution-1",
@@ -98,51 +98,31 @@ describe("Slack reply output", () => {
     );
   });
 
-  it("replies through the app's own connection when an older context names none", async () => {
+  it("refuses a context that names no connection rather than guessing one", async () => {
     const client = new RecordingSlackClient();
-    const lookups: string[] = [];
-    const execute = createSlackReplyExecutor({
-      client,
-      connectionForWorkspace: (organizationId, teamId) => {
-        lookups.push(`${organizationId}/${teamId}`);
-        return Promise.resolve(teamId === "T1" ? "connection-own" : undefined);
-      },
-    });
-    const context = (teamId: string) => ({
-      provider: "slack",
-      organizationId: "org-1",
-      teamId,
-      channelId: "C1",
-      threadTs: "1.1",
-      messageTs: "1.1",
-    });
+    const execute = createSlackReplyExecutor({ client });
 
-    await execute({
-      agentExecutionId: "execution-1",
-      toolType: "slack.reply",
-      args: { content: "Done" },
-      outputContext: context("T1"),
-    });
-    await assert.rejects(
+    await assert.rejects(() =>
       execute({
         agentExecutionId: "execution-1",
         toolType: "slack.reply",
         args: { content: "Done" },
-        outputContext: context("T-gone"),
+        outputContext: {
+          provider: "slack",
+          organizationId: "org-1",
+          teamId: "T1",
+          channelId: "C1",
+          threadTs: "1.1",
+          messageTs: "1.1",
+        },
       }),
-      /connection is unavailable/u,
     );
-
-    assert.deepEqual(lookups, ["org-1/T1", "org-1/T-gone"]);
-    assert.deepEqual(
-      client.messages.map((message) => message.connectionId),
-      ["connection-own"],
-    );
+    assert.deepEqual(client.messages, []);
   });
 
   it("fails closed for legacy output context without organization authority", async () => {
     const client = new RecordingSlackClient();
-    const execute = createSlackReplyExecutor({ client, connectionForWorkspace: unusedLookup });
+    const execute = createSlackReplyExecutor({ client });
 
     await assert.rejects(() =>
       execute({
@@ -155,10 +135,6 @@ describe("Slack reply output", () => {
     assert.deepEqual(client.messages, []);
   });
 });
-
-function unusedLookup(): Promise<string | undefined> {
-  return Promise.reject(new Error("the output context names its connection"));
-}
 
 class RecordingSlackClient implements SlackBotClient {
   messages: Array<{

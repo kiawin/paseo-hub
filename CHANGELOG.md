@@ -11,7 +11,7 @@
 
 ### Changed
 
-- App settings are stored per app. The upgrade migration keys each provider's existing settings by its app and assigns every existing Slack connection to the one stored Slack app, so a Hub with one Slack app keeps its settings, connections and connection slugs with no action. A second app's Socket Mode connection in a workspace that already has one gets the slug `slack-<team id>-<app id>`, in lower case. Two consequences of the upgrade: a Slack thread started before it is a new conversation on its next mention, because conversations are now kept per app, and an event Slack redelivers across the restart can run twice, because Slack delivery ids now include the app.
+- App settings are stored per app. The upgrade migration keys each provider's existing settings by its app and assigns every existing Slack connection to the one stored Slack app, so a Hub with one Slack app keeps its settings, connections and connection slugs with no action. A second app's Socket Mode connection in a workspace that already has one gets the slug `slack-<team id>-<app id>`, in lower case. Three consequences of the upgrade: a Slack thread started before it is a new conversation on its next mention, because conversations are now kept per app; an event Slack redelivers across the restart can run twice, because Slack delivery ids now include the app; and a Slack run still in flight across the restart cannot reply or react, because its saved context names no app or connection and Hub no longer guesses one. Restart Hub when no Slack run is in flight.
 - Unhandled provider event receipts expire automatically after seven days on every instance. Receipts routed to a trigger or still referenced by a run or attachment remain available.
 
 ## 0.11.0 - 2026-10-25

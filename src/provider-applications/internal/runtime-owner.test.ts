@@ -254,9 +254,30 @@ describe("dynamic provider runtime", () => {
     await stable.attachment!.resolve({
       organizationId: "org",
       connectionId: "connection",
-      locator: {},
+      locator: { applicationId: "A1" },
       executionId: "execution-1",
     });
+    // A context or locator that names no app has no app to go to, even with only one running.
+    await assert.rejects(
+      async () =>
+        stable.outputs[0]!.execute({
+          agentExecutionId: "execution-1",
+          toolType: "slack.reply",
+          args: { content: "reply" },
+          outputContext: {},
+        }),
+      /slack application required/u,
+    );
+    await assert.rejects(
+      async () =>
+        stable.attachment!.resolve({
+          organizationId: "org",
+          connectionId: "connection",
+          locator: {},
+          executionId: "execution-1",
+        }),
+      /slack application required/u,
+    );
 
     assert.deepEqual(used, ["launch:A1", "reply:A2", "attachment:A2"]);
     assert.deepEqual(stopped, ["A1"]);
@@ -1231,8 +1252,9 @@ function fakeRegistration(
       Promise.resolve([
         {
           triggerName: "mention",
-          triggerContext: { id },
-          outputContext: { id },
+          // Every context names its app, as production's do; the replacement keeps the slot's app.
+          triggerContext: { id, applicationId: "A1" },
+          outputContext: { id, applicationId: "A1" },
           hubConfig: {},
           conversation: null,
           invocation: { status: "accepted", prompt: "", inputs: {} },
@@ -1389,8 +1411,8 @@ function downstreamRegistration(
       Promise.resolve([
         {
           triggerName: "event",
-          triggerContext: { id },
-          outputContext: { provider: "slack", id },
+          triggerContext: { id, applicationId: "A1" },
+          outputContext: { provider: "slack", id, applicationId: "A1" },
           hubConfig: {},
           conversation: null,
           invocation: { status: "accepted", prompt: "", inputs: {} },
@@ -1468,7 +1490,7 @@ function externalTrigger(): ExternalTrigger {
     source: "slack.mention",
     deliveryId: "delivery",
     receivedAt: new Date(),
-    payload: {},
+    payload: { appId: "A1" },
   };
 }
 

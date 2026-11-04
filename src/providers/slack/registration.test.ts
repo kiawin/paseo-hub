@@ -337,6 +337,7 @@ describe("Slack registration", () => {
     assert(reply !== undefined);
     const context = {
       provider: "slack",
+      connectionId: "slack-connection",
       teamId: "T1",
       channelId: "C1",
       threadTs: "1.1",

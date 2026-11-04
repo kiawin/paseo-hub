@@ -181,18 +181,7 @@ export function createSlackRegistration(
         type: "slack.reply",
         tool: replyOutputTool,
         available: outputContextProvider("slack"),
-        execute: createSlackReplyExecutor({
-          client: bot,
-          connectionForWorkspace: async (organizationId, teamId) =>
-            (
-              await findSlackBindingForOrganization(
-                database,
-                configuration.appId,
-                organizationId,
-                teamId,
-              )
-            )?.id,
-        }),
+        execute: createSlackReplyExecutor({ client: bot }),
       },
     ],
     requests:
@@ -221,19 +210,6 @@ async function findUsableSlackConnection(
   const connection = await database.findSlackConnectionById(organizationId, connectionId);
   return connection !== undefined && hasRequiredSlackScopes(connection.scopes)
     ? connection
-    : undefined;
-}
-
-/** This registration's app's connection to the workspace; another app may share the workspace. */
-async function findSlackBindingForOrganization(
-  database: Database,
-  applicationId: string,
-  organizationId: string,
-  teamId: string,
-): Promise<SlackConnectionRecord | undefined> {
-  const binding = await database.findSlackConnection(applicationId, teamId);
-  return binding?.organizationId === organizationId && hasRequiredSlackScopes(binding.scopes)
-    ? binding
     : undefined;
 }
 

@@ -879,33 +879,6 @@ describe("Slack Phase 1 trigger provider", () => {
     assert.equal(await conversationOf("A1", "connection-a"), first);
   });
 
-  it("reacts and notifies through the accepted connection when an older context names none", async () => {
-    const database = createMemoryDatabase();
-    const { project, revision, store } = await createActiveProjectConfiguration(
-      database,
-      configuration(),
-      { organizationId: "org-1" },
-    );
-    const client = new RecordingSlackClient();
-    const provider = createSlackTriggerProvider({
-      configurationStoreForProject: () => store,
-      botUserIdForConnection: () => Promise.resolve("UBOT"),
-      client,
-    });
-    const match = (await provider.match(external(project.id, revision.id)))[0];
-    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    const { connectionId: _recorded, ...older } = match.triggerContext.target;
-    const context = { ...match.triggerContext, target: older };
-
-    await provider.onAgentExecutionFailed?.(context, older, "boom");
-
-    assert.ok(client.reactions.every((reaction) => reaction.startsWith("org-1:connection-1:")));
-    assert.deepEqual(
-      client.messages.map((message) => message.connectionId),
-      ["connection-1"],
-    );
-  });
-
   it("matches nothing for an event accepted without a connection", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(

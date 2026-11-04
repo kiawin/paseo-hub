@@ -350,10 +350,10 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   private stableRegistration(provider: Provider): ProviderRegistration {
     const state = this.state(provider);
     // Every provider but Slack runs one app, so each call goes to it. A Slack call goes to the app
-    // it names, and fails when that app is not running.
+    // it names, and fails when it names none or that app is not running.
     const select = (applicationId: string | undefined): ActiveRegistration | undefined =>
       provider === "slack"
-        ? slackRegistration(state, applicationId)
+        ? namedSlackRegistration(state, applicationId)
         : state.slots.values().next().value?.active;
     const source: TriggerSource = {
       start: async (handler) => {
@@ -684,7 +684,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         ? undefined
         : await this.options.database.findSlackConnectionApplicationId(connectionId);
     // No such connection: any registration refuses it after checking the caller's access. A
-    // connection from before apps were recorded goes to the only active app.
+    // connection with no app on its row goes to the only active app.
     if (owner === undefined) return first;
     return slackRegistration(state, owner ?? undefined);
   }
@@ -754,9 +754,18 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   }
 }
 
+/** The running Slack app a context or event names; one that names none has nowhere to go. */
+function namedSlackRegistration(
+  state: ProviderState,
+  applicationId: string | undefined,
+): ActiveRegistration {
+  if (applicationId === undefined) throw unavailable("slack_application_required");
+  return slackRegistration(state, applicationId);
+}
+
 /**
- * The Slack registration a call belongs to. A call that names no app comes from before apps were
- * recorded, or from the one app in effect, so it goes to the only active app.
+ * The Slack registration an operator action belongs to. An action that names no app goes to the
+ * only active app, and is refused when several run.
  */
 function slackRegistration(
   state: ProviderState,
