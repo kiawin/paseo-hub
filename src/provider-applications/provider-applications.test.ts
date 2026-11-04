@@ -854,6 +854,21 @@ describe("several Slack apps", () => {
       [["managedByEnvironment", "E1", 0]],
     );
 
+    // An install of another app begun before the environment took over cannot finish beside E1.
+    await assert.rejects(
+      fixture.runtime.completeSlack({
+        configuration: { ...slackConfiguration, appId: "B1", clientId: "client-b" },
+        expectedConfigurationVersion: undefined,
+        callbackOrigin: "https://hub.test",
+        userId: "operator",
+        installation: { ...slackInstallation(), appId: "B1", botUserId: "UBOT-B" },
+        binding: slackBinding("B1"),
+      }),
+      managed,
+    );
+    assert.equal(fixture.store.values.has("slack:E1"), false);
+    assert.equal(fixture.runtime.active("slack", "B1"), undefined);
+
     await fixture.applications.beginConnection(request("POST"), "slack", "org");
     await fixture.applications.retrySlackSocket(request("POST"));
     assert.deepEqual(fixture.runtime.preparedConfigurationIds("slack"), ["E1", "E1"]);

@@ -1259,6 +1259,11 @@ async function completeSlackInstallation(
     binding: BindSlackConnectionInput;
   },
 ): Promise<void> {
+  // An install begun before the environment took Slack over must not add an app beside the
+  // environment's: connecting a workspace to the environment's app never comes through here.
+  if (options.environment.slack !== undefined) {
+    throw new ProviderApplicationError("managedByEnvironment");
+  }
   const configuration = parseProviderApplicationConfiguration(input.configuration);
   if (configuration.provider !== "slack" || configuration.appId !== input.installation.appId) {
     throw new ProviderApplicationError("credentialsRejected");
