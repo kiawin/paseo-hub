@@ -44,7 +44,8 @@ describe("attachment capability boundary", () => {
     assert.equal(await response.text(), "exact bytes");
     assert.equal(response.headers.get("content-type"), "image/png");
     assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.match(response.headers.get("content-disposition") ?? "", /pixel\.png/u);
+    assert.equal(response.headers.get("content-disposition"), 'inline; filename="pixel.png"');
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
     assert.deepEqual(resolverCalls, [
       {
         organizationId: "org-1",
@@ -188,6 +189,52 @@ describe("attachment capability boundary", () => {
     );
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-length"), null);
+  });
+
+  it("downloads only the media types a browser could run", async () => {
+    const fixture = await workflowExecution();
+    const cases = [
+      ["image/png", "inline"],
+      ["Image/JPEG; charset=binary", "inline"],
+      ["text/plain; charset=utf-8", "inline"],
+      ["application/json", "inline"],
+      ["application/pdf", "inline"],
+      ["text/html", "attachment"],
+      ["image/svg+xml", "attachment"],
+      ["application/octet-stream", "attachment"],
+    ] as const;
+    for (const [index, [contentType, disposition]] of cases.entries()) {
+      const registry = createAttachmentCapabilityRegistry({
+        database: fixture.database,
+        publicBaseUrl: "https://hub.test",
+        authoritySecret: "hub-secret",
+        resolvers: {
+          slack: async () => new Response("bytes", { headers: { "content-type": contentType } }),
+        },
+      });
+      const attachment = await registry.register({
+        providerEventReceiptId: fixture.providerEventReceiptId,
+        organizationId: "org-1",
+        connectionId: "connection-1",
+        provider: "slack",
+        sourceId: `typed-file-${index}`,
+        locator: { fileId: `typed-file-${index}` },
+        filename: "file",
+        contentType,
+        byteSize: 5,
+      });
+      const response = await registry.handle(
+        new Request(registry.urlFor(attachment.id, fixture.executionId)),
+        fixture.executionId,
+        attachment.id,
+      );
+      assert.equal(
+        response.headers.get("content-disposition"),
+        `${disposition}; filename="file"`,
+        contentType,
+      );
+      assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    }
   });
 });
 
