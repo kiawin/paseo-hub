@@ -4,7 +4,10 @@ import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
-import { createSlackSocketInstallationVerifier } from "../../providers/slack/installation.js";
+import {
+  createSlackSocketInstallationVerifier,
+  type SlackSocketInstallationVerifier,
+} from "../../providers/slack/installation.js";
 import { startSlackSocketFixture } from "../../test-utils/slack-socket-fixture.js";
 import type { SlackConnectionClient, SlackInstallation } from "../../providers/slack/client.js";
 import type { LinearConnectionClient, LinearInstallation } from "../../providers/linear/client.js";
@@ -62,58 +65,104 @@ export const FIXTURE_SLACK_SOCKET_CREDENTIALS = {
   botToken: "xoxb-browser-fixture",
 } as const;
 
+/**
+ * The Socket Mode apps the Slack fixture runs, in the one workspace `T-ACME`: the first is the app
+ * every single-app journey uses, the second the bot a two-app journey adds beside it.
+ */
+export const FIXTURE_SLACK_SOCKET_APPS = [
+  {
+    appId: FIXTURE_APP_CREDENTIALS.slack.appId,
+    ...FIXTURE_SLACK_SOCKET_CREDENTIALS,
+    botId: "B-BROWSER",
+    botUserId: "B1",
+  },
+  {
+    appId: "browser-slack-app-2",
+    appToken: "xapp-browser-fixture-2",
+    botToken: "xoxb-browser-fixture-2",
+    botId: "B-BROWSER-2",
+    botUserId: "B2",
+  },
+] as const;
+
+type SlackSocketFixtureServer = Awaited<ReturnType<typeof startSlackSocketFixture>>;
+
 /** A provider-side HTTP + WebSocket fixture. Browser journeys cross the same wire boundaries as
- * production; only Slack's side of the internet is local. */
+ * production; only Slack's side of the internet is local. Each fixture app has its own Slack
+ * endpoint, as each app's tokens only open that app's socket. */
 export class BrowserSlackSocketFixture {
-  private fixture: Awaited<ReturnType<typeof startSlackSocketFixture>> | undefined;
+  private readonly fixtures = new Map<string, SlackSocketFixtureServer>();
 
   constructor(private readonly scenario: BrowserProviderScenario = "connected") {}
 
   async start(): Promise<void> {
-    this.fixture = await startSlackSocketFixture([], {
-      appId: FIXTURE_APP_CREDENTIALS.slack.appId,
-      ...FIXTURE_SLACK_SOCKET_CREDENTIALS,
-      teamId: "T-ACME",
-      botId: "B-BROWSER",
-      botUserId: "B1",
-      ...(this.scenario === "slack-permission-missing" ? { scopes: ["chat:write"] } : {}),
-    });
+    for (const app of FIXTURE_SLACK_SOCKET_APPS) {
+      this.fixtures.set(
+        app.appId,
+        await startSlackSocketFixture([], {
+          ...app,
+          teamId: "T-ACME",
+          ...(this.scenario === "slack-permission-missing" ? { scopes: ["chat:write"] } : {}),
+        }),
+      );
+    }
   }
 
+  /** The first app's endpoint. */
   get apiBaseUrl(): string {
-    if (this.fixture === undefined) throw new Error("Slack fixture is not running");
-    return this.fixture.apiBaseUrl;
+    return this.apiBaseUrlFor(FIXTURE_APP_CREDENTIALS.slack.appId);
   }
 
-  verifier() {
-    return createSlackSocketInstallationVerifier({ apiBaseUrl: this.apiBaseUrl });
+  /** The endpoint of the app with this id. */
+  apiBaseUrlFor(appId: string): string {
+    return this.fixture(appId).apiBaseUrl;
   }
 
-  async deliverMention(eventId: string): Promise<void> {
-    if (this.fixture === undefined) throw new Error("Slack fixture is not running");
+  /** Verifies against the endpoint of the app the tokens belong to, as Slack would. */
+  verifier(): SlackSocketInstallationVerifier {
+    return {
+      verify: (appToken, botToken) => {
+        // Tokens no fixture app owns are Slack's refusal, answered by the first app's endpoint.
+        const app = FIXTURE_SLACK_SOCKET_APPS.find((entry) => entry.appToken === appToken);
+        return createSlackSocketInstallationVerifier({
+          apiBaseUrl: this.apiBaseUrlFor(app?.appId ?? FIXTURE_SLACK_SOCKET_APPS[0].appId),
+        }).verify(appToken, botToken);
+      },
+    };
+  }
+
+  async deliverMention(
+    eventId: string,
+    appId: string = FIXTURE_APP_CREDENTIALS.slack.appId,
+  ): Promise<void> {
+    const fixture = this.fixture(appId);
+    const app = FIXTURE_SLACK_SOCKET_APPS.find((entry) => entry.appId === appId);
+    if (app === undefined) throw new Error(`Slack fixture runs no app ${appId}`);
     const envelopeId = `envelope-${eventId}`;
-    this.fixture.send({
+    fixture.send({
       type: "events_api",
       envelope_id: envelopeId,
       payload: {
         type: "event_callback",
         team_id: "T-ACME",
-        api_app_id: FIXTURE_APP_CREDENTIALS.slack.appId,
+        api_app_id: appId,
         event_id: eventId,
         event_time: 1_700_000_000,
         event: {
           type: "app_mention",
           user: "U1",
           channel: "C1",
-          text: "<@B1> socket delivery",
+          text: `<@${app.botUserId}> socket delivery`,
           ts: "1700000000.000100",
+          // A reply in a thread, so launching the run reads the thread before the mention.
+          thread_ts: "1700000000.000001",
           event_ts: "1700000000.000100",
         },
       },
     });
     const deadline = Date.now() + 5_000;
     while (
-      !this.fixture.acks.some(
+      !fixture.acks.some(
         (ack) =>
           ack !== null && typeof ack === "object" && Reflect.get(ack, "envelope_id") === envelopeId,
       )
@@ -125,7 +174,16 @@ export class BrowserSlackSocketFixture {
   }
 
   async close(): Promise<void> {
-    await this.fixture?.close();
+    await Promise.all([...this.fixtures.values()].map((fixture) => fixture.close()));
+  }
+
+  private fixture(appId: string): SlackSocketFixtureServer {
+    if (!FIXTURE_SLACK_SOCKET_APPS.some((app) => app.appId === appId)) {
+      throw new Error(`Slack fixture runs no app ${appId}`);
+    }
+    const fixture = this.fixtures.get(appId);
+    if (fixture === undefined) throw new Error("Slack fixture is not running");
+    return fixture;
   }
 }
 
@@ -304,13 +362,24 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
       ...shared,
       configuration,
       botClient: fixtures.slackBot,
-      connectionClient: new BrowserSlackConnections(input.callbackOrigin, fixtures.scenario),
+      connectionClient: new BrowserSlackConnections(
+        input.callbackOrigin,
+        fixtures.scenario,
+        configuration.appId,
+      ),
       ...(input.expectedConfigurationVersion === undefined
         ? {}
         : { expectedConfigurationVersion: input.expectedConfigurationVersion }),
       activateConfiguration: input.activateConfiguration,
       onVerifiedInstallation: input.onVerifiedSlackInstallation,
-      socket: { apiUrl: `${fixtures.slackSocket.apiBaseUrl}/apps.connections.open` },
+      socket: {
+        // Only a Socket Mode app opens a socket, and Slack's answer for it is its own app's.
+        apiUrl: `${fixtures.slackSocket.apiBaseUrlFor(
+          configuration.transport === "socket"
+            ? configuration.appId
+            : FIXTURE_SLACK_SOCKET_APPS[0].appId,
+        )}/apps.connections.open`,
+      },
     });
   };
 }
@@ -346,11 +415,20 @@ class BrowserLinearConnections implements LinearConnectionClient {
   }
 }
 
+/** Slack's OAuth side for one app: an installation names that app and its own bot. */
 class BrowserSlackConnections implements SlackConnectionClient {
   constructor(
     private readonly publicBaseUrl: string,
     private readonly scenario: BrowserProviderScenario,
+    private readonly appId: string = FIXTURE_APP_CREDENTIALS.slack.appId,
   ) {}
+
+  private get bot(): (typeof FIXTURE_SLACK_SOCKET_APPS)[number] {
+    return (
+      FIXTURE_SLACK_SOCKET_APPS.find((app) => app.appId === this.appId) ??
+      FIXTURE_SLACK_SOCKET_APPS[0]
+    );
+  }
 
   authorizationUrl(state: string): string {
     const url = new URL("/e2e/providers/slack/authorize", this.publicBaseUrl);
@@ -361,11 +439,14 @@ class BrowserSlackConnections implements SlackConnectionClient {
   exchangeCode(code: string): Promise<SlackInstallation> {
     if (code !== "accepted") return Promise.reject(new Error("installation rejected"));
     return Promise.resolve({
-      appId: FIXTURE_APP_CREDENTIALS.slack.appId,
+      appId: this.appId,
       teamId: "T-ACME",
       teamName: "Acme",
-      botUserId: "B1",
-      botAccessToken: "xoxb-fixture",
+      botUserId: this.bot.botUserId,
+      botAccessToken:
+        this.appId === FIXTURE_APP_CREDENTIALS.slack.appId
+          ? "xoxb-fixture"
+          : `xoxb-fixture-${this.appId}`,
       scopes:
         this.scenario === "slack-permission-missing"
           ? ["chat:write"]
@@ -382,7 +463,7 @@ class BrowserSlackConnections implements SlackConnectionClient {
   }
 
   verifyInstallation(installation: SlackInstallation): Promise<void> {
-    if (installation.teamId !== "T-ACME" || installation.botUserId !== "B1") {
+    if (installation.teamId !== "T-ACME" || installation.botUserId !== this.bot.botUserId) {
       return Promise.reject(new Error("auth.test rejected the bot"));
     }
     return Promise.resolve();

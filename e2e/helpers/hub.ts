@@ -16,7 +16,10 @@ import { z } from "zod";
 import { dump } from "js-yaml";
 import type { SourcePaseo } from "./source-paseo.js";
 import type { HubBundleFile } from "../../src/config/bundle.js";
-import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
+import type {
+  BrowserDiscordEvent,
+  BrowserSlackCall,
+} from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
 import {
@@ -59,8 +62,11 @@ export interface BuiltApplication {
   /** Arms one project snapshot read failure inside the disposable built application. */
   failNextProjectRead(): Promise<void>;
   prepareSlackSocketWorkflow(): Promise<void>;
-  deliverSlackSocketMention(eventId: string): Promise<void>;
-  slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  /** Sends a mention through the fixture Slack app named, the first app by default. */
+  deliverSlackSocketMention(eventId: string, appId?: string): Promise<void>;
+  slackSocketEvidence(eventId: string, appId?: string): Promise<{ receipts: number; runs: number }>;
+  /** Every call Hub has made to Slack as a bot, with the connection each was made through. */
+  slackBotCalls(): Promise<BrowserSlackCall[]>;
   /** Executes fixture setup or inspection against the database owned by this application. */
   query(sql: string, params?: readonly unknown[]): Promise<Record<string, unknown>[]>;
   installUnroutedSlackFixture(input: {
@@ -385,9 +391,13 @@ export class PaseoHub {
         await page.goto(`${application.origin}/?app=${provider}&result=${result}`);
       },
       seedSignedDelivery: (provider) => seedSignedDelivery(page, application.origin, provider),
+      postSlackEvent: (input) => postSlackEvent(page, application.origin, input),
+      slackHealth: () => slackHealth(page, application.origin),
       prepareSlackSocketWorkflow: () => application.prepareSlackSocketWorkflow(),
-      deliverSlackSocketMention: (eventId) => application.deliverSlackSocketMention(eventId),
-      slackSocketEvidence: (eventId) => application.slackSocketEvidence(eventId),
+      deliverSlackSocketMention: (eventId, appId) =>
+        application.deliverSlackSocketMention(eventId, appId),
+      slackSocketEvidence: (eventId, appId) => application.slackSocketEvidence(eventId, appId),
+      slackBotCalls: () => application.slackBotCalls(),
       restart: () => application.restart(),
       connectDaemon: () => this.enrollOperatorDaemon(application),
       openMember: async (member) => {
@@ -2035,18 +2045,45 @@ export class PaseoHub {
   }
 
   /** A connected app precondition for trigger-editor journeys; OAuth itself has separate specs. */
-  async seedSlackConnection(alias: string, slug: string, teamName: string): Promise<void> {
+  /**
+   * A Slack connection in the alias's organization. By default each lands in a workspace of its
+   * own for the first fixture app; naming a workspace and an app puts two apps' bots side by side.
+   */
+  async seedSlackConnection(
+    alias: string,
+    slug: string,
+    teamName: string,
+    options: {
+      teamId?: string;
+      applicationId?: string;
+      botUserId?: string;
+      botAccessToken?: string;
+    } = {},
+  ): Promise<void> {
     await this.queryDatabase(
       this.primary,
       `insert into slack_connections
          (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes,
           connected_by_user_id, provider_application_id)
-       select session.active_organization_id, $1, $2, $3, 'BROWSER_BOT', 'browser-token',
-              '["app_mentions:read","chat:write"]'::jsonb, "user".id, 'browser-slack-app'
+       select session.active_organization_id, $1, $2, $3, $6, $7,
+              '["app_mentions:read","chat:write"]'::jsonb, "user".id, $5
        from session join "user" on "user".id = session.user_id
        where lower("user".email) = $4 and session.expires_at > now()`,
-      [`browser-${randomUUID()}`, slug, teamName, this.requireUser(alias).accountEmail],
+      [
+        options.teamId ?? `browser-${randomUUID()}`,
+        slug,
+        teamName,
+        this.requireUser(alias).accountEmail,
+        options.applicationId ?? "browser-slack-app",
+        options.botUserId ?? "BROWSER_BOT",
+        options.botAccessToken ?? "browser-token",
+      ],
     );
+  }
+
+  /** Which trigger each active Slack route in a workspace launches, and the connection it binds. */
+  async slackTriggerRoutes(teamId: string) {
+    return slackTriggerRoutes((sql, params) => this.primary.query(sql, params), teamId);
   }
 
   /** A migrated workflow precondition for the compatibility lane in the trigger editor. */
@@ -5409,15 +5446,117 @@ export interface AppSetupSession {
   ): Promise<void>;
   /** A correctly-signed inbound delivery — the only thing that proves a webhook secret. */
   seedSignedDelivery(provider: "github" | "slack"): Promise<void>;
+  /**
+   * A Slack mention posted to the events URL shared by every webhook app, claiming to be for `appId`
+   * and signed with `signingSecret`. Answers the status Hub gave it.
+   */
+  postSlackEvent(input: { appId: string; eventId: string; signingSecret: string }): Promise<number>;
+  /** `/health/slack` as an unauthenticated monitor reads it. */
+  slackHealth(): Promise<SlackHealthSnapshot>;
   prepareSlackSocketWorkflow(): Promise<void>;
-  deliverSlackSocketMention(eventId: string): Promise<void>;
-  slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  /** Sends a mention through the fixture Slack app named, the first app by default. */
+  deliverSlackSocketMention(eventId: string, appId?: string): Promise<void>;
+  slackSocketEvidence(eventId: string, appId?: string): Promise<{ receipts: number; runs: number }>;
+  /** Every call Hub has made to Slack as a bot, with the connection each was made through. */
+  slackBotCalls(): Promise<BrowserSlackCall[]>;
   restart(): Promise<void>;
   /** Enrolls and connects a daemon into the operator's organization; answers with its slug. */
   connectDaemon(): Promise<string>;
   /** A second, ordinary account on the same instance. Never its operator. */
   openMember(member: Account): Promise<{ page: Page; close(): Promise<void> }>;
   close(): Promise<void>;
+}
+
+/** The active Slack routes in a workspace: each trigger, the connection it binds and its app. */
+export async function slackTriggerRoutes(
+  query: (sql: string, params: readonly unknown[]) => Promise<Record<string, unknown>[]>,
+  teamId: string,
+): Promise<{ trigger: string; connectionId: string; connection: string; app: string | null }[]> {
+  return z
+    .array(
+      z.object({
+        trigger: z.string(),
+        connectionId: z.string(),
+        connection: z.string(),
+        app: z.string().nullable(),
+      }),
+    )
+    .parse(
+      await query(
+        `select route.trigger_name trigger, connection.id "connectionId", connection.slug connection,
+           connection.provider_application_id app
+         from project_trigger_routes route
+         join projects project
+           on project.active_configuration_revision_id = route.configuration_revision_id
+         join slack_connections connection on connection.id = route.connection_id
+         where route.provider = 'slack' and connection.team_id = $1
+         order by route.trigger_name`,
+        [teamId],
+      ),
+    );
+}
+
+export interface SlackHealthSnapshot {
+  status: number;
+  ok: boolean;
+  /** One entry per running Slack app, in app order; none of them names the app. */
+  apps: { ok: boolean; reason: string | null; transport: string | null; state: string | null }[];
+}
+
+async function slackHealth(page: Page, origin: string): Promise<SlackHealthSnapshot> {
+  const response = await page.request.get(`${origin}/health/slack`);
+  const body = z
+    .object({
+      ok: z.boolean(),
+      apps: z.array(
+        z.object({
+          ok: z.boolean(),
+          reason: z.string().nullable(),
+          transport: z.string().nullable(),
+          state: z.string().nullable(),
+        }),
+      ),
+    })
+    .parse(await response.json());
+  return { status: response.status(), ...body };
+}
+
+async function postSlackEvent(
+  page: Page,
+  origin: string,
+  input: { appId: string; eventId: string; signingSecret: string },
+): Promise<number> {
+  const timestamp = String(Math.floor(Date.now() / 1_000));
+  const body = JSON.stringify({
+    type: "event_callback",
+    team_id: "T-ACME",
+    api_app_id: input.appId,
+    event_id: input.eventId,
+    event_time: Number(timestamp),
+    event: {
+      type: "app_mention",
+      user: "U1",
+      channel: "C1",
+      text: "<@B1> signed delivery",
+      ts: `${timestamp}.000100`,
+      event_ts: `${timestamp}.000100`,
+    },
+  });
+  const signature = `v0=${createHmac("sha256", input.signingSecret)
+    .update("v0:")
+    .update(timestamp)
+    .update(":")
+    .update(body)
+    .digest("hex")}`;
+  const response = await page.request.post(`${origin}/api/integrations/slack/events`, {
+    data: body,
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": timestamp,
+      "x-slack-signature": signature,
+    },
+  });
+  return response.status();
 }
 
 async function seedSignedDelivery(
