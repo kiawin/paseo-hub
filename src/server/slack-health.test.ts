@@ -111,6 +111,23 @@ describe("Slack intake health report", () => {
     );
   });
 
+  it("shows the most severe app at the top, and the earliest of equals", () => {
+    const stuck = socket({ activePhase: "dispatch", activePhaseStartedAt: ago(60_001) });
+    const down = socket({ state: "reconnecting", stateChangedAt: ago(SLACK_SOCKET_DOWN_MS) });
+    const stalled = socket({ acceptTimeouts: 1, lastAcceptTimeoutAt: ago(1_000) });
+
+    // A stuck frame first, a socket down second: the top level reports the socket.
+    assert.equal(judgeApps([stuck, down]).body.reason, "socket_down");
+    assert.equal(judgeApps([stalled, stuck]).body.reason, "accept_stalled");
+    // Equals keep their order, and a healthy first app never hides an unhealthy one.
+    assert.equal(judgeApps([socket(), stuck, stuck]).body.reason, "frame_stuck");
+    const two = judgeApps([
+      stuck,
+      socket({ activePhase: "ack", activePhaseStartedAt: ago(90_000) }),
+    ]);
+    assert.equal(two.body.activePhase, "dispatch");
+  });
+
   it("is healthy and all null when Slack is not configured", () => {
     const { apps, ...body } = healthy(undefined);
     assert.deepEqual(apps, []);

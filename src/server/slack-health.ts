@@ -7,6 +7,13 @@ export const SLACK_SOCKET_DOWN_MS = 300_000;
 
 export type SlackHealthReason = "frame_stuck" | "accept_stalled" | "socket_down";
 
+/** Worst first: no events arrive at all, then none are accepted, then one frame is stuck. */
+const WORST_REASON_FIRST: readonly SlackHealthReason[] = [
+  "socket_down",
+  "accept_stalled",
+  "frame_stuck",
+];
+
 /** One Slack app's intake, judged on its own. */
 export interface SlackAppHealthBody {
   ok: boolean;
@@ -31,9 +38,9 @@ export interface SlackAppHealthBody {
 }
 
 /**
- * The top-level fields are the first unhealthy app's, or the first app's while all are healthy, so
- * a check written for one app reads the same. `apps` has every app in order. The endpoint is public,
- * so nothing in it names an app or a workspace.
+ * The top-level fields are the worst unhealthy app's (the earliest of equals), or the first app's
+ * while all are healthy, so a check written for one app reads the same. `apps` has every app in
+ * order. The endpoint is public, so nothing in it names an app or a workspace.
  */
 export interface SlackHealthBody extends SlackAppHealthBody {
   apps: SlackAppHealthBody[];
@@ -73,8 +80,18 @@ export function slackHealthReport(
   now: Date,
 ): SlackHealthReport {
   const apps = intakes.map((intake) => appHealth(intake, now));
-  const shown = apps.find((app) => !app.ok) ?? apps[0] ?? appHealth(undefined, now);
+  const shown = worstApp(apps) ?? appHealth(undefined, now);
   return { status: shown.ok ? 200 : 503, body: { ...shown, apps } };
+}
+
+/** The most severe unhealthy app, the earliest of equals; the first app when all are healthy. */
+function worstApp(apps: readonly SlackAppHealthBody[]): SlackAppHealthBody | undefined {
+  const severity = (app: SlackAppHealthBody) =>
+    app.reason === null ? WORST_REASON_FIRST.length : WORST_REASON_FIRST.indexOf(app.reason);
+  return apps.reduce<SlackAppHealthBody | undefined>(
+    (worst, app) => (worst === undefined || severity(app) < severity(worst) ? app : worst),
+    undefined,
+  );
 }
 
 function appHealth(intake: SlackIntakeHealth | undefined, now: Date): SlackAppHealthBody {
