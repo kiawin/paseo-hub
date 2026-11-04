@@ -15,6 +15,8 @@ import { providerApplicationSaveFailure, providerHost, providerName } from "./sa
 const providerSchema = z.enum(["github", "slack", "discord", "linear"]);
 const surfaceSchema = z.enum(["appSetup", "apps"]).optional();
 const expectedVersionSchema = z.number().int().positive().optional();
+/** The Slack app a call is for. Slack runs several apps; without one, the only app is meant. */
+const applicationIdSchema = z.string().trim().min(1).optional();
 const configurationSchema = z.discriminatedUnion("provider", [
   z.object({
     provider: z.literal("github"),
@@ -37,6 +39,7 @@ const configurationSchema = z.discriminatedUnion("provider", [
     signingSecret: z.string().min(1),
     expectedVersion: expectedVersionSchema,
     surface: surfaceSchema,
+    applicationId: applicationIdSchema,
   }),
   z.object({
     provider: z.literal("discord"),
@@ -59,12 +62,15 @@ const connectionSchema = z.object({
   provider: providerSchema,
   organizationId: z.string().min(1),
   surface: surfaceSchema,
+  applicationId: applicationIdSchema,
 });
 const slackSocketSchema = z.object({
   appToken: z.string().trim().startsWith("xapp-").min(6),
   botToken: z.string().trim().startsWith("xoxb-").min(6),
   expectedVersion: expectedVersionSchema,
+  applicationId: applicationIdSchema,
 });
+const slackRetrySchema = z.object({ applicationId: applicationIdSchema });
 
 export const providerApplicationsOverview = createServerFn({ method: "GET" }).handler(
   async (): Promise<Result<ProviderApplicationOverview>> => {
@@ -96,7 +102,13 @@ export const verifyAndSaveProviderApplication = createServerFn({ method: "POST" 
       const capability = (await getApplication()).providerApplications;
       if (capability === null) throw new Error("unavailable");
       return respondOk(
-        await capability.verifyAndSave(getRequest(), data.provider, configuration, data.surface),
+        await capability.verifyAndSave(
+          getRequest(),
+          data.provider,
+          normalizedConfiguration(data),
+          data.surface,
+          data.provider === "slack" ? data.applicationId : undefined,
+        ),
       );
     } catch (error) {
       return providerApplicationSaveFailure(
@@ -119,6 +131,7 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
           data.provider,
           data.organizationId,
           data.surface,
+          data.applicationId,
         ),
       );
     } catch (error) {
@@ -157,6 +170,7 @@ export const configureSlackSocketApplication = createServerFn({ method: "POST" }
           appToken: data.appToken,
           botToken: data.botToken,
           ...(data.expectedVersion === undefined ? {} : { expectedVersion: data.expectedVersion }),
+          ...(data.applicationId === undefined ? {} : { applicationId: data.applicationId }),
         }),
       );
     } catch (error) {
@@ -164,12 +178,13 @@ export const configureSlackSocketApplication = createServerFn({ method: "POST" }
     }
   });
 
-export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handler(
-  async (): Promise<Result<void>> => {
+export const retrySlackSocketDelivery = createServerFn({ method: "POST" })
+  .validator(slackRetrySchema)
+  .handler(async ({ data }): Promise<Result<void>> => {
     try {
       const capability = (await getApplication()).providerApplications;
       if (capability === null) throw new Error("unavailable");
-      await capability.retrySlackSocket(getRequest());
+      await capability.retrySlackSocket(getRequest(), data.applicationId);
       return respondOk(undefined);
     } catch (error) {
       return respondWithFailure(
@@ -177,11 +192,12 @@ export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handl
         { operation: "slack.socket.retry", component: "provider_applications", provider: "slack" },
         {
           fallback: "Hub couldn't retry Slack. Sign in as the instance operator, then try again.",
+          conflict:
+            "Slack has more than one app now. Nothing was retried. Reload the page, then retry the app you mean.",
         },
       );
     }
-  },
-);
+  });
 
 function normalizedConfiguration(
   data: z.infer<typeof configurationSchema>,

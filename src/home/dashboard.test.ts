@@ -146,7 +146,7 @@ function memberDatabase({ slack = true }: { slack?: boolean } = {}): Database {
             botUserId: "UBOT",
             botAccessToken: "token",
             scopes: ["app_mentions:read"],
-            providerApplicationId: null,
+            providerApplicationId: "A1",
           },
         ]
       : [],

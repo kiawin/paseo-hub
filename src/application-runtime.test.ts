@@ -144,32 +144,34 @@ describe("application runtime provider composition", () => {
         entitlements: entitlementsForTest(database),
         billing: null,
         registrations: [fakeRegistration()],
-        slackIntakeHealth: () => ({
-          transport: "socket",
-          state: "connected",
-          stateChangedAt: connectedAt,
-          queuedFrames: 2,
-          activePhase: null,
-          activePhaseStartedAt: null,
-          lastCompletedAt: stalledAt,
-          acceptTimeouts: 3,
-          ackTimeouts: 0,
-          dispatchTimeouts: 1,
-          lastAcceptOkAt: null,
-          lastAcceptTimeoutAt: stalledAt,
-          abandonedHandlers: 1,
-          oldestAbandonedStartedAt: null,
-          closedConnectionFrames: 0,
-          oldestClosedFrameStartedAt: null,
-          lastPongAt: null,
-        }),
+        slackIntakeHealth: () => [
+          {
+            transport: "socket",
+            state: "connected",
+            stateChangedAt: connectedAt,
+            queuedFrames: 2,
+            activePhase: null,
+            activePhaseStartedAt: null,
+            lastCompletedAt: stalledAt,
+            acceptTimeouts: 3,
+            ackTimeouts: 0,
+            dispatchTimeouts: 1,
+            lastAcceptOkAt: null,
+            lastAcceptTimeoutAt: stalledAt,
+            abandonedHandlers: 1,
+            oldestAbandonedStartedAt: null,
+            closedConnectionFrames: 0,
+            oldestClosedFrameStartedAt: null,
+            lastPongAt: null,
+          },
+        ],
         close: () => Promise.resolve(),
       }),
     );
     try {
       const response = await handleSlackHealth();
       assert.equal(response.status, 503);
-      assert.deepEqual(await response.json(), {
+      const stalled = {
         ok: false,
         reason: "accept_stalled",
         transport: "socket",
@@ -189,7 +191,8 @@ describe("application runtime provider composition", () => {
         closedConnectionFrames: 0,
         oldestClosedFrameAgeMs: null,
         lastPongAt: null,
-      });
+      };
+      assert.deepEqual(await response.json(), { ...stalled, apps: [stalled] });
     } finally {
       await stopApplication();
     }
@@ -214,7 +217,10 @@ describe("application runtime provider composition", () => {
       assert.ok(typeof body === "object" && body !== null);
       assert.deepEqual(
         Object.entries(body).filter(([, value]) => value !== null),
-        [["ok", true]],
+        [
+          ["ok", true],
+          ["apps", []],
+        ],
       );
     } finally {
       await stopApplication();

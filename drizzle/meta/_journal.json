@@ -372,6 +372,13 @@
       "when": 1795502404666,
       "tag": "0052_dashboard_activity_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1795622807657,
+      "tag": "0053_multi_slack_apps",
+      "breakpoints": true
     }
   ]
 }

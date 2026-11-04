@@ -7,6 +7,7 @@ import { createMemoryDatabase } from "../../db/memory.js";
 import type {
   BindSlackConnectionInput,
   ConnectionAttemptRecord,
+  SlackConnectionRecord,
   StartConnectionAttemptInput,
 } from "../../db/types.js";
 import type { SlackBotClient } from "../../triggers/slack/client.js";
@@ -306,26 +307,20 @@ describe("Slack registration", () => {
 
   it("does not lend a rebound workspace token to an older organization execution", async () => {
     const database = createMemoryDatabase();
-    database.findSlackConnectionForOrganization = () =>
-      Promise.resolve({
-        id: "slack-connection",
-        organizationId: "org-b",
-        slug: "slack-workspace",
-        teamId: "T1",
-        teamName: "Workspace",
-        botUserId: "UBOT-B",
-        botAccessToken: "token-b",
-        providerApplicationId: "A1",
-        scopes: [
-          "app_mentions:read",
-          "channels:history",
-          "chat:write",
-          "files:read",
-          "groups:history",
-          "reactions:write",
-          "users:read",
-        ],
-      });
+    const rebound = slackConnection({
+      id: "slack-connection",
+      organizationId: "org-b",
+      botUserId: "UBOT-B",
+      botAccessToken: "token-b",
+      providerApplicationId: "A1",
+    });
+    database.findSlackConnection = () => Promise.resolve(rebound);
+    database.findSlackConnectionById = (organizationId, connectionId) =>
+      Promise.resolve(
+        organizationId === rebound.organizationId && connectionId === rebound.id
+          ? rebound
+          : undefined,
+      );
     const requests: string[] = [];
     const registration = createSlackRegistration({
       database,
@@ -342,6 +337,7 @@ describe("Slack registration", () => {
     assert(reply !== undefined);
     const context = {
       provider: "slack",
+      connectionId: "slack-connection",
       teamId: "T1",
       channelId: "C1",
       threadTs: "1.1",
@@ -366,7 +362,103 @@ describe("Slack registration", () => {
     });
     assert.deepEqual(requests, ["Bearer token-b"]);
   });
+
+  it("uses the token of the connection a call names when two apps share a workspace", async () => {
+    const database = createMemoryDatabase();
+    const connections = [
+      slackConnection({
+        id: "connection-a",
+        botAccessToken: "token-a",
+        providerApplicationId: "A1",
+      }),
+      slackConnection({
+        id: "connection-b",
+        botAccessToken: "token-b",
+        providerApplicationId: "B1",
+      }),
+    ];
+    database.findSlackConnectionById = (organizationId, connectionId) =>
+      Promise.resolve(
+        connections.find(
+          (connection) =>
+            connection.organizationId === organizationId && connection.id === connectionId,
+        ),
+      );
+    const requests: string[] = [];
+    const registration = createSlackRegistration({
+      database,
+      auth: null,
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://hub.test",
+      configuration: { ...slackConfiguration(), appId: "B1" },
+      fetch: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : input);
+        requests.push(`${url.pathname} ${new Headers(init?.headers).get("authorization")}`);
+        if (url.pathname === "/api/files.info") {
+          return Response.json({
+            ok: true,
+            file: { id: "F1", url_private_download: "https://files.slack.com/F1" },
+          });
+        }
+        return url.hostname === "files.slack.com"
+          ? new Response("file")
+          : Response.json({ ok: true });
+      },
+    });
+
+    await registration.outputs[0]!.execute({
+      agentExecutionId: "execution-b",
+      toolType: "slack.reply",
+      args: { content: "From B" },
+      outputContext: {
+        provider: "slack",
+        applicationId: "B1",
+        organizationId: "org",
+        connectionId: "connection-b",
+        teamId: "T1",
+        channelId: "C1",
+        threadTs: "1.1",
+        messageTs: "1.1",
+      },
+    });
+    const download = await registration.attachment!.resolve({
+      organizationId: "org",
+      connectionId: "connection-b",
+      locator: { teamId: "T1", fileId: "F1", applicationId: "B1" },
+    });
+
+    assert.equal(await download.text(), "file");
+    assert.deepEqual(requests, [
+      "/api/chat.postMessage Bearer token-b",
+      "/api/files.info Bearer token-b",
+      "/F1 Bearer token-b",
+    ]);
+  });
 });
+
+function slackConnection(
+  overrides: Partial<SlackConnectionRecord> & Pick<SlackConnectionRecord, "id">,
+): SlackConnectionRecord {
+  return {
+    organizationId: "org",
+    slug: "slack-workspace",
+    teamId: "T1",
+    teamName: "Workspace",
+    botUserId: "UBOT",
+    botAccessToken: "token",
+    providerApplicationId: "A1",
+    scopes: [
+      "app_mentions:read",
+      "channels:history",
+      "chat:write",
+      "files:read",
+      "groups:history",
+      "reactions:write",
+      "users:read",
+    ],
+    ...overrides,
+  };
+}
 
 function slackConfiguration() {
   return {

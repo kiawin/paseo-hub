@@ -86,8 +86,8 @@ export interface ApplicationRuntime {
   operatorConsole: OperatorConsole | null;
   providerApplications: ProviderApplications | null;
   testTriggerRoutes: boolean;
-  /** Slack intake health for `/health/slack`; absent or undefined when Slack is not running. */
-  slackIntakeHealth?(): SlackIntakeHealth | undefined;
+  /** Slack intake health for `/health/slack`, one entry per running Slack app. */
+  slackIntakeHealth?(): readonly SlackIntakeHealth[];
   auth(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
   signInEmail?(
@@ -166,7 +166,7 @@ export async function handleAuth(request: Request): Promise<Response> {
 
 export async function handleSlackHealth(): Promise<Response> {
   const runtime = await getApplication();
-  const { status, body } = slackHealthReport(runtime.slackIntakeHealth?.(), new Date());
+  const { status, body } = slackHealthReport(runtime.slackIntakeHealth?.() ?? [], new Date());
   return Response.json(body, { status });
 }
 

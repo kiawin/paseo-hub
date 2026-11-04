@@ -1067,7 +1067,7 @@ export const slackConnections = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    teamId: text("team_id").notNull().unique(),
+    teamId: text("team_id").notNull(),
     providerApplicationId: text("provider_application_id"),
     slug: text().notNull(),
     teamName: text("team_name").notNull(),
@@ -1086,6 +1086,11 @@ export const slackConnections = pgTable(
   (table) => [
     uniqueIndex("slack_connections_id_organization_unique").on(table.id, table.organizationId),
     uniqueIndex("slack_connections_organization_slug_unique").on(table.organizationId, table.slug),
+    // Each Slack app connects a workspace once; several apps may share one workspace.
+    uniqueIndex("slack_connections_application_team_unique").on(
+      table.providerApplicationId,
+      table.teamId,
+    ),
   ],
 );
 
@@ -1308,7 +1313,9 @@ export const runtimeConfiguration = pgTable(
 export const runtimeProviderConfiguration = pgTable(
   "runtime_provider_configuration",
   {
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
+    /** The verified identity's id, which activations and connections record as the app id. */
+    applicationId: text("application_id").notNull(),
     configuration: jsonb().notNull(),
     verifiedExternalIdentity: jsonb("verified_external_identity").notNull(),
     version: integer().default(1).notNull(),
@@ -1319,6 +1326,11 @@ export const runtimeProviderConfiguration = pgTable(
     }),
   },
   (table) => [
+    primaryKey({ columns: [table.provider, table.applicationId] }),
+    // Slack is the only provider that may run more than one app at a time.
+    uniqueIndex("runtime_provider_configuration_single_app_unique")
+      .on(table.provider)
+      .where(sql`${table.provider} <> 'slack'`),
     check(
       "runtime_provider_configuration_provider_check",
       sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
@@ -1330,12 +1342,16 @@ export const runtimeProviderConfiguration = pgTable(
 export const runtimeProviderActivations = pgTable(
   "runtime_provider_activation",
   {
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
     providerApplicationId: text("provider_application_id").notNull(),
     configurationVersion: integer("configuration_version").notNull(),
     activatedAt: timestamp("activated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    primaryKey({ columns: [table.provider, table.providerApplicationId] }),
+    uniqueIndex("runtime_provider_activation_single_app_unique")
+      .on(table.provider)
+      .where(sql`${table.provider} <> 'slack'`),
     check(
       "runtime_provider_activation_provider_check",
       sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,

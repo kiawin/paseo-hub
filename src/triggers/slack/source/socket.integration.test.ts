@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { afterEach, describe, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { DurableProviderEvent } from "../../../db/types.js";
@@ -8,7 +9,11 @@ import { createLogger } from "../../../logger.js";
 import { assertOneFailure, FailureLogStream } from "../../../test-utils/failure-logs.js";
 import { startSlackSocketFixture } from "../../../test-utils/slack-socket-fixture.js";
 import { createSlackEventSource } from "./index.js";
-import { SLACK_SOCKET_PING_INTERVAL_MS, SLACK_SOCKET_PONG_TIMEOUT_MS } from "./internal/socket.js";
+import {
+  SLACK_SOCKET_PING_INTERVAL_MS,
+  SLACK_SOCKET_PONG_TIMEOUT_MS,
+  slackSocketSignatureHash,
+} from "./internal/socket.js";
 
 describe("Slack Socket Mode source", () => {
   const closers: Array<() => Promise<void>> = [];
@@ -46,7 +51,13 @@ describe("Slack Socket Mode source", () => {
       acceptedInputs.map((input) => {
         return { deliveryId: input.deliveryId, source: input.source, teamId: input.teamId };
       }),
-      [{ deliveryId: "slack-E123", source: "slack.mention", teamId: "T123" }],
+      [{ deliveryId: "slack-A123-E123", source: "slack.mention", teamId: "T123" }],
+    );
+    // Receipt hashes are unique across apps, so the envelope's hash names the app.
+    assert.equal(acceptedInputs[0]?.signatureHash, slackSocketSignatureHash("A123", "env-123"));
+    assert.notEqual(
+      acceptedInputs[0]?.signatureHash,
+      createHash("sha256").update("env-123").digest("hex"),
     );
     await source.stop();
   });
@@ -177,7 +188,7 @@ describe("Slack Socket Mode source", () => {
     const source = socketSource(slack, acceptedWithEvent, undefined, { dispatchTimeoutMs: 300 });
     await source.start(async (trigger) => {
       dispatched.push(trigger.deliveryId);
-      if (trigger.deliveryId === "slack-E1") await never;
+      if (trigger.deliveryId === "slack-A123-E1") await never;
     });
     await waitFor(() => source.status().state === "connected");
 
@@ -187,7 +198,7 @@ describe("Slack Socket Mode source", () => {
     await waitFor(() => slack.acks.length === 2);
 
     assert.deepEqual(slack.acks, [{ envelope_id: "env-1" }, { envelope_id: "env-2" }]);
-    assert.deepEqual(dispatched, ["slack-E1", "slack-E2"]);
+    assert.deepEqual(dispatched, ["slack-A123-E1", "slack-A123-E2"]);
     assert.equal(slack.openCount, 1);
     await source.stop();
   });
@@ -205,7 +216,7 @@ describe("Slack Socket Mode source", () => {
     const source = socketSource(
       slack,
       async (input) => {
-        if (input.deliveryId === "slack-E1") await firstAccept;
+        if (input.deliveryId === "slack-A123-E1") await firstAccept;
         return acceptedWithEvent(input);
       },
       undefined,
@@ -224,7 +235,7 @@ describe("Slack Socket Mode source", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     assert.deepEqual(slack.acks, [{ envelope_id: "env-2" }]);
-    assert.deepEqual(dispatched, ["slack-E2"]);
+    assert.deepEqual(dispatched, ["slack-A123-E2"]);
     assert.equal(slack.openCount, 1);
     assertSlackFailure(stream, "slack.socket.accept_timeout", "internal", payloadCanary);
     assert.equal(stream.text().includes("xapp-fixture-secret"), false);
@@ -283,7 +294,7 @@ describe("Slack Socket Mode source", () => {
       dispatchTimeoutMs: 60_000,
     });
     await source.start(async (trigger) => {
-      if (trigger.deliveryId === "slack-E1") await never;
+      if (trigger.deliveryId === "slack-A123-E1") await never;
     });
     await waitFor(() => source.status().state === "connected");
 
@@ -309,7 +320,7 @@ describe("Slack Socket Mode source", () => {
     const source = socketSource(
       slack,
       async (input) => {
-        if (input.deliveryId === "slack-E1") await firstAccept;
+        if (input.deliveryId === "slack-A123-E1") await firstAccept;
         return acceptedWithEvent(input);
       },
       undefined,
@@ -347,7 +358,7 @@ describe("Slack Socket Mode source", () => {
     const source = socketSource(
       slack,
       async (input) => {
-        if (input.deliveryId === "slack-E1") await firstAccept;
+        if (input.deliveryId === "slack-A123-E1") await firstAccept;
         return acceptedWithEvent(input);
       },
       undefined,
@@ -369,7 +380,7 @@ describe("Slack Socket Mode source", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     assert.deepEqual(slack.acks, [{ envelope_id: "env-2" }]);
-    assert.deepEqual(dispatched, ["slack-E2"]);
+    assert.deepEqual(dispatched, ["slack-A123-E2"]);
     assert.deepEqual(operations(stream), ["slack.socket.connect"]);
     await source.stop();
   });
@@ -396,7 +407,7 @@ describe("Slack Socket Mode source", () => {
     const source = socketSource(
       slack,
       async (input) => {
-        if (input.deliveryId === "slack-E1") {
+        if (input.deliveryId === "slack-A123-E1") {
           await new Promise((resolve) => setTimeout(resolve, 60));
           throw new Error("late accept failure");
         }
@@ -449,7 +460,7 @@ describe("Slack Socket Mode intake health", () => {
     const source = socketSource(
       slack,
       async (input) => {
-        if (input.deliveryId === "slack-E1") await never;
+        if (input.deliveryId === "slack-A123-E1") await never;
         return acceptedWithEvent(input);
       },
       undefined,
@@ -641,7 +652,7 @@ describe("Slack Socket Mode intake health", () => {
     const source = socketSource(
       slack,
       async (input) => {
-        if (input.deliveryId === "slack-E2") await never;
+        if (input.deliveryId === "slack-A123-E2") await never;
         return acceptedWithEvent(input);
       },
       undefined,
@@ -680,7 +691,7 @@ describe("Slack Socket Mode intake health", () => {
     const source = socketSource(
       slack,
       async (input) => {
-        if (input.deliveryId === "slack-E1") await never;
+        if (input.deliveryId === "slack-A123-E1") await never;
         return acceptedWithEvent(input);
       },
       undefined,
@@ -716,8 +727,8 @@ describe("Slack Socket Mode intake health", () => {
     const source = socketSource(
       slack,
       async (input) => {
-        if (input.deliveryId === "slack-E1") await firstAccept;
-        if (input.deliveryId === "slack-E2") await never;
+        if (input.deliveryId === "slack-A123-E1") await firstAccept;
+        if (input.deliveryId === "slack-A123-E2") await never;
         return acceptedWithEvent(input);
       },
       undefined,
@@ -760,14 +771,14 @@ describe("Slack Socket Mode intake health", () => {
       slack,
       async (input) => {
         durable.push(input.deliveryId);
-        if (input.deliveryId === "slack-E2") await never;
+        if (input.deliveryId === "slack-A123-E2") await never;
         return acceptedWithEvent(input);
       },
       undefined,
       { acceptTimeoutMs: 200, dispatchTimeoutMs: 60_000, stopGraceMs: 100 },
     );
     const holdFirst: TriggerHandler = async (trigger) => {
-      if (trigger.deliveryId === "slack-E1") await firstHandler;
+      if (trigger.deliveryId === "slack-A123-E1") await firstHandler;
     };
     await runWithFailureTracking(
       () => source.start(holdFirst),
@@ -788,7 +799,7 @@ describe("Slack Socket Mode intake health", () => {
     await waitFor(() => intakeOf(source).closedConnectionFrames === 0);
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    assert.deepEqual(durable, ["slack-E1", "slack-E3"]);
+    assert.deepEqual(durable, ["slack-A123-E1", "slack-A123-E3"]);
     assert.equal(intakeOf(source).acceptTimeouts, 0);
     assert.equal(intakeOf(source).lastAcceptTimeoutAt, null);
     await source.stop();
@@ -823,7 +834,7 @@ describe("Slack Socket Mode intake health", () => {
     });
     await waitFor(() => slack.acks.length === 1);
 
-    assert.deepEqual(durable, ["slack-E1"]);
+    assert.deepEqual(durable, ["slack-A123-E1"]);
     const health = intakeOf(source);
     assert.equal(health.lastAcceptOkAt, null);
     assert.notEqual(health.lastAcceptTimeoutAt, null);
