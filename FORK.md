@@ -34,6 +34,10 @@ gh pr create --repo kiawin/paseo-hub --base main --head sync/kiawin-paseo-hub \
   a separate conflict-resolution or merge commit, and do not run a formatter while resolving.
 - A fork commit the rebase drops means upstream accepted it. That is the goal.
 - Always pass `--repo kiawin/paseo-hub` to `gh`; otherwise it targets the upstream parent.
+- CI also runs on every push to `sync/**`. The sync branch is `main` rebased, so its pull request
+  often conflicts with `main`, and GitHub does not run `pull_request` workflows on a conflicting
+  pull request. Read the sync result with `gh run list --branch sync/kiawin-paseo-hub`, not
+  `gh pr checks`.
 
 Review the pull request, then land it with a force-push, not the Merge button. The branch is
 `main` rebased, not a superset of it, so merging would add a merge commit and a duplicate of every
