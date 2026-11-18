@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { it } from "vitest";
-import { Route } from "./routes/agent-executions/$executionId/mcp.js";
+import { describe, it } from "vitest";
+import { Route as executionRoute } from "./routes/agent-executions/$executionId/mcp.js";
+import { Route as sessionRoute } from "./routes/agent-sessions/$sessionId/mcp.js";
 
 /**
  * TanStack's `Constrain<ObjectLiteral, Fn>` handlers type resolves member
@@ -13,26 +14,23 @@ interface McpRouteMethodHandlers {
   DELETE(): Response | Promise<Response>;
 }
 
-// The execution capability MCP server is stateless and POST-only. Before this
-// guard, an unhandled GET (SSE stream open) or DELETE (session terminate)
-// fell through to the SPA route render: 200 HTML for an unknown execution id,
-// or a 500 for a real one once it hit `handleExecutionCapabilities`. A 500
-// makes MCP Streamable HTTP clients treat the server as dead instead of
-// retrying with the one method it actually supports.
-it("rejects GET on the MCP route with 405 and an Allow: POST header", async () => {
-  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the generated route type cannot express calling one handler directly
-  const handlers = Route.options.server?.handlers as unknown as McpRouteMethodHandlers;
-  const response = await handlers.GET();
+// The execution and agent-session MCP servers are stateless and POST-only. Without a guard, an
+// unhandled GET (SSE stream open) or DELETE (session terminate) fell through to the SPA route
+// render and answered 500. A 500 makes MCP Streamable HTTP clients treat the server as dead
+// instead of retrying with the one method it actually supports.
+describe.each([
+  ["execution", executionRoute],
+  ["agent-session", sessionRoute],
+])("%s MCP route", (_name, route) => {
+  it.each(["GET", "DELETE"] as const)(
+    "rejects %s with 405 and an Allow: POST header",
+    async (method) => {
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the generated route type cannot express calling one handler directly
+      const handlers = route.options.server?.handlers as unknown as McpRouteMethodHandlers;
+      const response = await handlers[method]();
 
-  assert.equal(response.status, 405);
-  assert.equal(response.headers.get("allow"), "POST");
-});
-
-it("rejects DELETE on the MCP route with 405 and an Allow: POST header", async () => {
-  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the generated route type cannot express calling one handler directly
-  const handlers = Route.options.server?.handlers as unknown as McpRouteMethodHandlers;
-  const response = await handlers.DELETE();
-
-  assert.equal(response.status, 405);
-  assert.equal(response.headers.get("allow"), "POST");
+      assert.equal(response.status, 405);
+      assert.equal(response.headers.get("allow"), "POST");
+    },
+  );
 });
