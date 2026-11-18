@@ -324,7 +324,7 @@ export function createSlackTriggerProvider(options: {
       await addReaction(options.client, target, "white_check_mark");
       return null;
     },
-    async onAgentExecutionFailed(context, _output, reason, reactionState) {
+    async onAgentExecutionFailed(context, _output, reason, reactionState, lastAssistantMessage) {
       await failWithNotice(
         options.client,
         context.target,
@@ -332,6 +332,7 @@ export function createSlackTriggerProvider(options: {
           reason,
           context.target.organizationId,
           options.billingUrlForOrganization ?? missingBillingUrl,
+          lastAssistantMessage,
         ),
         reactionState,
       );

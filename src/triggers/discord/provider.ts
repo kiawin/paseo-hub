@@ -237,7 +237,13 @@ export function createDiscordTriggerProvider(options: {
       await react(options.bot, triggerContext.target, "white_check_mark");
       return null;
     },
-    async onAgentExecutionFailed(triggerContext, _outputContext, reason, reactionState) {
+    async onAgentExecutionFailed(
+      triggerContext,
+      _outputContext,
+      reason,
+      reactionState,
+      lastAssistantMessage,
+    ) {
       await deleteReactionForPhase(options.bot, triggerContext.target, reactionState);
       await react(options.bot, triggerContext.target, "x");
       await postThreadNotice(
@@ -247,6 +253,7 @@ export function createDiscordTriggerProvider(options: {
           reason,
           triggerContext.organizationId,
           options.billingUrlForOrganization ?? missingBillingUrl,
+          lastAssistantMessage,
         ),
       );
       return null;

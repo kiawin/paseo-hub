@@ -592,7 +592,13 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               reactionState,
             ) ?? Promise.resolve(),
         ),
-      onAgentExecutionFailed: (triggerContext, outputContext, reason, reactionState) =>
+      onAgentExecutionFailed: (
+        triggerContext,
+        outputContext,
+        reason,
+        reactionState,
+        lastAssistantMessage,
+      ) =>
         invoke(
           [outputContext, triggerContext],
           (trigger) =>
@@ -601,6 +607,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               outputContext,
               reason,
               reactionState,
+              lastAssistantMessage,
             ) ?? Promise.resolve(),
         ),
       onAgentExecutionTerminal: (executionId, triggerContext) =>

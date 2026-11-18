@@ -34,6 +34,7 @@ it("uses the UTC month and next first for the execution limit", async () => {
     reason,
     "org-1",
     async () => "https://hub.paseo.sh/o/acme/settings/billing",
+    undefined,
     new Date("2026-12-31T23:30:00Z"),
   );
   assert.equal(
@@ -55,5 +56,21 @@ it("keeps other entitlement denials on the existing error path", async () => {
       throw new Error("should not need a billing URL");
     }),
     `Paseo agent failed: ${reason}`,
+  );
+});
+
+it("quotes and truncates the agent's last message under the failure reason", async () => {
+  const noBilling = async () => {
+    throw new Error("should not need a billing URL");
+  };
+  assert.equal(
+    await agentFailureNotice("step_idle_timeout", "org-1", noBilling, "Line one\nLine two"),
+    "Paseo agent failed: step_idle_timeout\n\nThe agent's last message before it stopped:\n> Line one\n> Line two",
+  );
+  const long = await agentFailureNotice("idle_timeout", "org-1", noBilling, "x".repeat(5_000));
+  assert.equal(long.endsWith(`> ${"x".repeat(1_500)}…`), true);
+  assert.equal(
+    await agentFailureNotice("idle_timeout", "org-1", noBilling, "  "),
+    "Paseo agent failed: idle_timeout",
   );
 });
