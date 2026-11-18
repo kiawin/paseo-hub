@@ -28,7 +28,15 @@ export interface AgentConnection {
   restore(workspaceId: string, timeoutMs?: number): Promise<boolean>;
   control(agentId: string, workspaceId: string, action: "interrupt" | "archive"): Promise<void>;
   watch(agentId: string, listener: (event: AgentEvent) => void): Promise<() => void>;
+  /** The text of the agent's most recent assistant message, read from the daemon's timeline. */
+  lastAssistantMessage(agentId: string, timeoutMs?: number): Promise<string | undefined>;
 }
+
+/** Enough recent entries to reach the last assistant message past trailing tool calls. */
+const LAST_MESSAGE_TIMELINE_LIMIT = 50;
+const TimelineEntriesSchema = z.array(
+  z.object({ item: z.object({ type: z.string(), text: z.string().optional() }).passthrough() }),
+);
 
 const EnvelopeSchema = z.object({
   type: z.literal("session"),
@@ -237,6 +245,20 @@ export class DaemonAgents implements AgentConnection {
       listeners.delete(listener);
       if (listeners.size === 0) this.listeners.delete(agentId);
     };
+  }
+  async lastAssistantMessage(agentId: string, timeoutMs?: number): Promise<string | undefined> {
+    const response = await this.request(
+      {
+        type: "fetch_agent_timeline_request",
+        agentId,
+        direction: "tail",
+        limit: LAST_MESSAGE_TIMELINE_LIMIT,
+        projection: "projected",
+      },
+      timeoutMs,
+    );
+    const entries = TimelineEntriesSchema.parse(response["entries"]);
+    return entries.findLast((entry) => entry.item.type === "assistant_message")?.item.text;
   }
   private emit(agentId: string, event: AgentEvent): void {
     for (const listener of this.listeners.get(agentId) ?? []) listener(event);

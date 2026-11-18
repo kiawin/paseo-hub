@@ -338,3 +338,36 @@ test.each([
   unwatch();
   agents.close();
 });
+
+test("lastAssistantMessage reads the newest assistant entry from the daemon timeline", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = new DaemonAgents((frame) => {
+    const { message } = z
+      .object({ message: z.record(z.string(), z.unknown()) })
+      .parse(JSON.parse(frame));
+    requests.push(message);
+    agents.receive({
+      type: "session",
+      message: {
+        type: "fetch_agent_timeline_response",
+        payload: {
+          requestId: message["requestId"],
+          entries: [
+            { item: { type: "assistant_message", text: "older answer" } },
+            { item: { type: "assistant_message", text: "the answer" } },
+            { item: { type: "tool_call", name: "mcp__hub__reply" } },
+          ],
+          error: null,
+        },
+      },
+    });
+  });
+  enable(agents);
+
+  expect(await agents.lastAssistantMessage("agent-1")).toBe("the answer");
+  expect(requests[0]).toMatchObject({
+    type: "fetch_agent_timeline_request",
+    agentId: "agent-1",
+    direction: "tail",
+  });
+});

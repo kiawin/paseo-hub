@@ -1463,6 +1463,31 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(hub.controlActions(), ["interrupt"]);
   });
 
+  it("puts the agent's last assistant message in the idle timeout failure", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      timeoutMs: 60 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
+    });
+
+    await hub.agentBecomesIdle(result.execution.id, result.agentId);
+    hub.agentSaysUnheard(result.agentId, "The XML has 3 root elements.");
+    await hub.advanceDispatchTime(5 * 60_000);
+
+    const execution = await hub.execution(result.execution.id);
+    assert.deepEqual(
+      { status: execution.status, result: execution.result },
+      {
+        status: "failed",
+        result: {
+          status: "failed",
+          reason: "idle_timeout",
+          lastAssistantMessage: "The XML has 3 root elements.",
+        },
+      },
+    );
+  });
+
   it.each([false, true])(
     "archives an auto-archive run in a background %s workspace after idle timeout",
     async (background) => {

@@ -74,6 +74,8 @@ interface HubExecutionEnv {
 }
 
 const DEFAULT_DISPATCH_TIMEOUT_MS = 30_000;
+const LAST_MESSAGE_READ_TIMEOUT_MS = 5_000;
+const LAST_MESSAGE_MAX_CHARS = 4_000;
 const DEFAULT_AGENT_EXECUTION_TIMEOUT_MS = 60 * 60_000;
 const DEFAULT_AGENT_IDLE_TIMEOUT_MS = 5 * 60_000;
 
@@ -1170,6 +1172,7 @@ export class DaemonDispatchLifecycle {
     reason: string,
     details: {
       lastInvalidOutput?: unknown;
+      lastAssistantMessage?: string;
       notifyProvider?: boolean;
       deadlineCondition?: {
         kind: "hard" | "idle";
@@ -1187,6 +1190,9 @@ export class DaemonDispatchLifecycle {
       ...(details.lastInvalidOutput === undefined
         ? {}
         : { lastInvalidOutput: details.lastInvalidOutput }),
+      ...(details.lastAssistantMessage === undefined
+        ? {}
+        : { lastAssistantMessage: details.lastAssistantMessage }),
     };
     const workflowDeadline =
       current.workflowStepRunId !== null && details.deadlineCondition !== undefined;
@@ -1696,7 +1702,11 @@ export class DaemonDispatchLifecycle {
 
     const wholeRunExpired = await this.isWholeRunDeadlineExpired(execution);
     const failure = deadlineFailure(execution, deadline, wholeRunExpired);
+    // An agent that went quiet may still have answered while Hub could not hear it.
+    const lastAssistantMessage =
+      deadline.kind === "idle" ? await this.readLastAssistantMessage(execution) : undefined;
     const failed = await this.failAgentExecution(executionId, failure.reason, {
+      ...(lastAssistantMessage === undefined ? {} : { lastAssistantMessage }),
       deadlineCondition: {
         kind: deadline.kind,
         deadlineAt: deadline.at,
@@ -1713,6 +1723,25 @@ export class DaemonDispatchLifecycle {
       this.armExecutionDeadline(current);
     }
     return false;
+  }
+
+  /** Best effort: a daemon that cannot answer must not stop the execution from failing. */
+  private async readLastAssistantMessage(
+    execution: AgentExecutionRecord,
+  ): Promise<string | undefined> {
+    if (execution.daemonId === null || execution.daemonAgentId === null) return undefined;
+    const connection = this.options.connectionForDaemon(execution.daemonId);
+    if (connection === undefined) return undefined;
+    try {
+      const text = await connection.agents.lastAssistantMessage(
+        execution.daemonAgentId,
+        LAST_MESSAGE_READ_TIMEOUT_MS,
+      );
+      return text?.slice(0, LAST_MESSAGE_MAX_CHARS);
+    } catch (error) {
+      this.report(error, "daemon.agent.last_message");
+      return undefined;
+    }
   }
 
   private async isWholeRunDeadlineExpired(execution: AgentExecutionRecord): Promise<boolean> {
