@@ -10,6 +10,7 @@ import { createPublicApi } from "../public-api/index.js";
 import type { PublicOperations } from "../public-operations/index.js";
 import { createSlackWebhookSource } from "../triggers/slack/webhook.js";
 import { createFetchServer } from "./node-server.js";
+import { registerResponseLifecycle } from "./response-lifecycle.js";
 import { registerResponseFinishCleanup } from "./response-lifecycle.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "./request-origin.js";
 
@@ -272,6 +273,87 @@ describe("HTTP failure ownership", () => {
     assert.equal(records[0]?.["status"], 500);
     assert.equal(stream.text().includes("formatless-secret-f09e"), false);
     assert.equal(stream.text().includes("fake-not-logged"), false);
+  });
+});
+
+describe("HTTP failure after the response started", () => {
+  it("aborts the transfer, reports once, runs the abort cleanup, and does not crash", async () => {
+    const stream = new CaptureStream();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    let aborted: () => void = () => undefined;
+    const abortRan = new Promise<void>((resolve) => {
+      aborted = resolve;
+    });
+    const encoder = new TextEncoder();
+    const server = createFetchServer(
+      () => {
+        let sent = false;
+        const body = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (!sent) {
+              sent = true;
+              controller.enqueue(encoder.encode("first chunk"));
+              return;
+            }
+            // Let the first chunk and the headers reach the client before the body fails.
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            controller.error(new Error("upstream body timed out"));
+          },
+        });
+        return registerResponseLifecycle(
+          new Response(body, { headers: { "content-type": "text/plain" } }),
+          { onFinish: () => undefined, onAbort: aborted },
+        );
+      },
+      { logger: createLogger(stream) },
+    );
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("server did not bind");
+      const response = await fetch(`http://127.0.0.1:${address.port}/attachment`);
+      assert.equal(response.status, 200);
+      await assert.rejects(response.arrayBuffer());
+      await abortRan;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(unhandled, []);
+      const records = stream.records();
+      assert.equal(records.length, 1);
+      assert.equal(records[0]?.["operation"], "http.request");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      await closeServer(server);
+    }
+  });
+
+  it("still answers 500 when the failure happens before the headers are sent", async () => {
+    const stream = new CaptureStream();
+    const server = createFetchServer(
+      () => {
+        throw new Error("handler failed");
+      },
+      { logger: createLogger(stream) },
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("server did not bind");
+    try {
+      const page = await fetch(`http://127.0.0.1:${address.port}/page`);
+      assert.equal(page.status, 500);
+      assert.match(page.headers.get("content-type") ?? "", /^text\/plain/u);
+      await page.text();
+      const api = await fetch(`http://127.0.0.1:${address.port}/api/v1/projects`);
+      assert.equal(api.status, 500);
+      assert.match(api.headers.get("content-type") ?? "", /^application\/json/u);
+      assert.deepEqual(
+        z.object({ error: z.string() }).parse(await api.json()).error,
+        "internal_error",
+      );
+    } finally {
+      await closeServer(server);
+    }
   });
 });
 

@@ -40,7 +40,19 @@ export function createFetchServer(
       : { canonicalRequestOrigin: parseHttpOrigin(options.canonicalRequestOrigin) }),
   };
   const handler = (request: IncomingMessage, response: ServerResponse) => {
-    void forwardRequest(fetchHandler, request, response, resolvedOptions);
+    forwardRequest(fetchHandler, request, response, resolvedOptions).catch((error: unknown) => {
+      // forwardRequest reports its own failures; this only catches what its catch block throws.
+      // An unhandled rejection here would exit the whole process.
+      try {
+        reportFailure(
+          error,
+          { operation: "http.request", component: "http" },
+          { logger: resolvedOptions.logger ?? defaultLogger },
+        );
+      } finally {
+        response.destroy();
+      }
+    });
   };
   return resolvedOptions.tls === undefined
     ? createServer(handler)
@@ -143,6 +155,12 @@ async function forwardRequest(
       },
       { logger: options.logger ?? defaultLogger },
     );
+    if (outgoing.headersSent) {
+      // The status and part of the body are already on the wire. Destroy the socket so the
+      // client sees a broken transfer instead of a short body that looks complete.
+      outgoing.destroy(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     outgoing.statusCode = 500;
     outgoing.setHeader("x-request-id", report.requestId);
     if (path.startsWith("/api/")) {
