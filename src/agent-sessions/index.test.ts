@@ -50,6 +50,9 @@ class TestAgents implements AgentConnection {
   async watch() {
     return () => {};
   }
+  async lastAssistantMessage() {
+    return undefined;
+  }
   async restore(workspaceId: string) {
     this.restorations++;
     for (const [id, agent] of this.agents)

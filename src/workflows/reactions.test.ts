@@ -691,6 +691,7 @@ async function runTwoStepWorkflow<
       send: async () => {},
       control: async () => {},
       restore: async () => false,
+      lastAssistantMessage: async () => undefined,
       watch: async () => () => {},
     },
     getProviderSnapshot: async () => {
