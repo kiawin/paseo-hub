@@ -2,9 +2,9 @@ import type {
   AttachmentResolver,
   AttachmentResolverInput,
 } from "../../attachments/capabilities.js";
+import { fetchAttachment } from "../../attachments/download.js";
 
 const DISCORD_ATTACHMENT_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
-const DISCORD_ATTACHMENT_TIMEOUT_MS = 10_000;
 
 export function createDiscordAttachmentResolver(
   options: {
@@ -15,10 +15,13 @@ export function createDiscordAttachmentResolver(
   const request = options.fetch ?? fetch;
   return async (input) => {
     const url = readDiscordAttachmentUrl(input);
-    return request(url, {
-      method: "GET",
-      signal: AbortSignal.timeout(options.requestTimeoutMs ?? DISCORD_ATTACHMENT_TIMEOUT_MS),
-    });
+    const timeout = options.requestTimeoutMs;
+    return fetchAttachment(
+      request,
+      url,
+      { method: "GET" },
+      timeout === undefined ? {} : { headersTimeoutMs: timeout, idleTimeoutMs: timeout },
+    );
   };
 }
 
