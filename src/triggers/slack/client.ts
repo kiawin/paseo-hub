@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { fetchAttachment } from "../../attachments/download.js";
 import { reportFailure, UpstreamFailure, type FailureKind } from "../../failures/index.js";
 
 const SlackApiResponseSchema = z
@@ -300,11 +301,14 @@ export function createSlackBotClient(options: {
     ) {
       throw new Error("Slack returned an invalid attachment URL");
     }
-    return request(downloadUrl, {
-      method: "GET",
-      headers: { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(options.requestTimeoutMs ?? SLACK_API_TIMEOUT_MS),
-    });
+    return fetchAttachment(
+      request,
+      downloadUrl,
+      { method: "GET", headers: { authorization: `Bearer ${token}` } },
+      options.requestTimeoutMs === undefined
+        ? {}
+        : { headersTimeoutMs: options.requestTimeoutMs, idleTimeoutMs: options.requestTimeoutMs },
+    );
   }
 
   async function lookupUserName(input: {
