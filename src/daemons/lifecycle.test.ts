@@ -133,6 +133,7 @@ describe("durable Hub action acknowledgement state", () => {
         },
         get: async () => agent,
         restore: async () => true,
+        lastAssistantMessage: async () => undefined,
         control: async () => {},
         watch: async () => {
           subscriptions++;
@@ -464,6 +465,7 @@ class AcknowledgementConnection implements DaemonConnection {
     restore: async () => {
       throw new Error("not used");
     },
+    lastAssistantMessage: async () => undefined,
     control: async (_agentId, _workspaceId, action) => {
       this.actions.push(action);
     },

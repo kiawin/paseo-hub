@@ -129,6 +129,11 @@ const ExecutionSessionRequestSchema = z.object({
       agentId: z.string(),
     }),
     z.object({
+      type: z.literal("fetch_agent_timeline_request"),
+      requestId: z.string(),
+      agentId: z.string(),
+    }),
+    z.object({
       type: z.literal("workspace.title.set.request"),
       requestId: z.string(),
       workspaceId: z.string(),
@@ -881,6 +886,9 @@ export class HubHarness {
   }
   async completeCurrentTurn(agentId: string, options?: { becomeIdle: boolean }): Promise<void> {
     await this.requireDaemon().completesTurn(agentId, options);
+  }
+  agentSaysUnheard(agentId: string, text: string): void {
+    this.requireDaemon().saysAsAssistant(agentId, text);
   }
   agentBecomesIdleWhileDisconnected(agentId: string): void {
     this.requireDaemon().changesStatus(agentId, "idle");
@@ -2167,6 +2175,7 @@ class TestDaemon {
   private socket: WebSocket | undefined;
   private permissions: string[] = [];
   private readonly agents = new Map<string, Record<string, unknown>>();
+  private readonly assistantMessages = new Map<string, string>();
   private createRequests = 0;
   private includeBackground = false;
   private readonly controls: HubExecutionControlAction[] = [];
@@ -2563,6 +2572,10 @@ class TestDaemon {
     });
     if (options.becomeIdle) this.changesStatus(agentId, "idle");
   }
+  /** The agent said this without Hub hearing it live; Hub can only read it from the timeline. */
+  saysAsAssistant(agentId: string, text: string): void {
+    this.assistantMessages.set(agentId, text);
+  }
   async completesTurnWithoutFinishTimeline(agentId: string): Promise<void> {
     this.send({
       type: "agent_stream",
@@ -2624,8 +2637,8 @@ class TestDaemon {
       });
       return;
     }
-    if (request.type === "fetch_agent_request") {
-      this.fetchAgent(request);
+    if (isFetchRequest(request)) {
+      this.answerFetch(request);
       return;
     }
     if (request.type === "workspace.title.set.request") {
@@ -2699,6 +2712,23 @@ class TestDaemon {
           ? "fetch_agents_response"
           : "agent.timeline.set_subscription.response",
       payload: { requestId: request.requestId },
+    });
+  }
+
+  private answerFetch(request: FetchRequest): void {
+    if (request.type === "fetch_agent_request") {
+      this.fetchAgent(request);
+      return;
+    }
+    const text = this.assistantMessages.get(request.agentId);
+    this.send({
+      type: "fetch_agent_timeline_response",
+      payload: {
+        requestId: request.requestId,
+        agentId: request.agentId,
+        entries: text === undefined ? [] : [{ item: { type: "assistant_message", text } }],
+        error: null,
+      },
     });
   }
 
@@ -2783,6 +2813,16 @@ class TestDaemon {
   private send(value: unknown): void {
     this.socket?.send(JSON.stringify({ type: "session", message: value }));
   }
+}
+
+interface FetchRequest {
+  type: "fetch_agent_request" | "fetch_agent_timeline_request";
+  requestId: string;
+  agentId: string;
+}
+
+function isFetchRequest(request: { type: string }): request is FetchRequest {
+  return request.type === "fetch_agent_request" || request.type === "fetch_agent_timeline_request";
 }
 
 function isHubHello(value: unknown): boolean {
