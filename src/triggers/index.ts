@@ -165,6 +165,8 @@ export interface TriggerProvider<
     outputContext: OutputContext,
     reason: string,
     reactionState?: TriggerProviderReactionState,
+    /** What the agent last said, when the failure is that it went quiet. */
+    lastAssistantMessage?: string,
   ): Promise<TriggerProviderReactionResult>;
   onAgentExecutionTerminal?(executionId: string, triggerContext: TriggerContext): Promise<void>;
   onMachineTerminated?(

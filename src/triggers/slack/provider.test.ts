@@ -283,6 +283,35 @@ describe("Slack Phase 1 trigger provider", () => {
     );
   });
 
+  it("quotes the agent's last message in the Slack failure notice", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const client = new RecordingSlackClient();
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
+      client,
+    });
+    const match = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    await provider.onAgentExecutionFailed?.(
+      match.triggerContext,
+      match.outputContext,
+      "step_idle_timeout",
+      undefined,
+      "The file has 3 root elements.",
+    );
+    assert.equal(
+      client.messages[0]?.content,
+      "Paseo agent failed: step_idle_timeout\n\nThe agent's last message before it stopped:\n> The file has 3 root elements.",
+    );
+  });
+
   it("targets Slack failure output at the originating message thread", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
