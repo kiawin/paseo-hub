@@ -57,9 +57,22 @@ export function createFetchRequestListener(
       ? {}
       : { canonicalRequestOrigin: parseHttpOrigin(options.canonicalRequestOrigin) }),
   };
-  return (request, response) => {
-    void forwardRequest(fetchHandler, request, response, resolvedOptions);
+  const handler = (request: IncomingMessage, response: ServerResponse) => {
+    forwardRequest(fetchHandler, request, response, resolvedOptions).catch((error: unknown) => {
+      // forwardRequest reports its own failures; this only catches what its catch block throws.
+      // An unhandled rejection here would exit the whole process.
+      try {
+        reportFailure(
+          error,
+          { operation: "http.request", component: "http" },
+          { logger: resolvedOptions.logger ?? defaultLogger },
+        );
+      } finally {
+        response.destroy();
+      }
+    });
   };
+  return handler;
 }
 
 async function forwardRequest(
@@ -170,6 +183,7 @@ async function forwardRequest(
       },
       { logger: options.logger ?? defaultLogger },
     );
+    if (destroyAfterHeadersSent(outgoing, error)) return;
     outgoing.statusCode = 500;
     outgoing.setHeader("x-request-id", report.requestId);
     if (path.startsWith("/api/")) {
@@ -186,6 +200,14 @@ async function forwardRequest(
     outgoing.setHeader("content-type", "text/plain; charset=utf-8");
     outgoing.end(withReference("Hub couldn't complete this request.", report.requestId));
   }
+}
+
+function destroyAfterHeadersSent(outgoing: ServerResponse, error: unknown): boolean {
+  if (!outgoing.headersSent) return false;
+  // The status and part of the body are already on the wire. Destroy the socket so the client sees
+  // a broken transfer instead of a short body that looks complete.
+  outgoing.destroy(error instanceof Error ? error : new Error(String(error)));
+  return true;
 }
 
 function drainOrClose(outgoing: ServerResponse): Promise<void> {
