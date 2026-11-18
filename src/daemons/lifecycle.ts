@@ -262,6 +262,11 @@ export class DaemonDispatchLifecycle {
         reactionState: run.reactionState,
       });
     }
+    const steps = await this.options.database.listWorkflowStepRunsForTriggerRun(run.id);
+    const lastAssistantMessage = steps
+      .filter((step) => step.status === "failed" || step.status === "timed_out")
+      .map((step) => lastAssistantMessageOf(step.output))
+      .find((message) => message !== undefined);
     return notifyAgentExecutionFailed({
       provider,
       triggerContext: run.triggerContext,
@@ -270,6 +275,7 @@ export class DaemonDispatchLifecycle {
         run.failureReason ??
         (run.status === "timed_out" ? "workflow_timed_out" : "workflow_failed"),
       reactionState: run.reactionState,
+      ...(lastAssistantMessage === undefined ? {} : { lastAssistantMessage }),
     });
   }
 
@@ -1840,12 +1846,14 @@ async function notifyIndividualExecution(
   failureReason?: string,
 ): Promise<TriggerProviderReactionState> {
   if (execution.status === "failed") {
+    const lastAssistantMessage = lastAssistantMessageOf(execution.result);
     return notifyAgentExecutionFailed({
       provider,
       triggerContext: execution.triggerContext,
       outputContext: execution.outputContext,
       reason: failureReason ?? executionFailureReason(execution) ?? "agent_execution_failed",
       reactionState: execution.reactionState,
+      ...(lastAssistantMessage === undefined ? {} : { lastAssistantMessage }),
     });
   } else if (execution.status === "succeeded") {
     return notifyAgentExecutionCompleted({
@@ -1863,6 +1871,12 @@ async function notifyIndividualExecution(
       reactionState: execution.reactionState,
     });
   }
+}
+
+function lastAssistantMessageOf(output: unknown): string | undefined {
+  if (typeof output !== "object" || output === null) return undefined;
+  const message = (output as { lastAssistantMessage?: unknown }).lastAssistantMessage;
+  return typeof message === "string" ? message : undefined;
 }
 
 function executionFailureReason(execution: AgentExecutionRecord | undefined): string | undefined {

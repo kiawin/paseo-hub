@@ -54,12 +54,14 @@ export async function notifyAgentExecutionFailed(input: {
   outputContext: unknown;
   reason: string;
   reactionState?: TriggerProviderReactionState;
+  lastAssistantMessage?: string;
 }): Promise<TriggerProviderReactionState> {
   const result = await input.provider.onAgentExecutionFailed?.(
     input.triggerContext,
     input.outputContext,
     input.reason,
     input.reactionState,
+    input.lastAssistantMessage,
   );
   return retainReactionState(input.reactionState, result);
 }
