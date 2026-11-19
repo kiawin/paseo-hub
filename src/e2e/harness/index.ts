@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import type { DatabaseRuntime } from "../../db/runtime/index.js";
 import { createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
 import { z } from "zod";
@@ -15,6 +15,7 @@ import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 import { currentProjectConfigurationFiles } from "../../test-utils/current-project-configuration.js";
+import { startPostgresContainer } from "../../db/test-utils/postgres-container.js";
 
 const exec = promisify(execFile);
 const HUB_ROOT = process.cwd();
@@ -1361,7 +1362,7 @@ export class HubE2E {
     this.hubPort = hubPort;
     this.hubOrigin = `http://127.0.0.1:${hubPort}`;
     this.daemonHost = `127.0.0.1:${daemonPort}`;
-    this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    this.postgres = await startPostgresContainer();
     this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     this.proxy = await HubFaultProxy.start(this.hubOrigin, proxyPort);
     this.hub = await this.startHub();

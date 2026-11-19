@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { createDatabase } from "./test-utils/runtime.js";
@@ -15,12 +15,13 @@ import type { DurableProviderEvent } from "../db/types.js";
 import type { RejectedTriggerProviderMatch, TriggerProviderMatch } from "../triggers/index.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
+import { startPostgresContainer } from "./test-utils/postgres-container.js";
 
 describe("agent execution PostgreSQL repository", () => {
   let postgres: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
 
   afterAll(async () => {

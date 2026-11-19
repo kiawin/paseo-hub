@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, describe, it } from "vitest";
 import {
   embeddedDatabaseRuntime,
@@ -22,6 +21,7 @@ import {
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const roots: string[] = [];
 
@@ -519,7 +519,7 @@ async function databaseFixture(engine: "PGlite" | "PostgreSQL"): Promise<{
     const bundle = await embeddedDatabaseRuntime(root);
     return { bundle, close: () => bundle.runtime.close() };
   }
-  const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+  const postgres = await startPostgresContainer();
   const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
   return {
     bundle,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import type { QueryRow } from "../db/runtime/index.js";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { z } from "zod";
@@ -8,6 +8,7 @@ import { createDatabase, createPostgresPool } from "../db/test-utils/runtime.js"
 import type { Database } from "../db/types.js";
 import { OrganizationCliCredentials } from "../auth/cli-credentials.js";
 import { CliAuthorizations } from "./index.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const startSchema = z.object({ deviceCode: z.string(), userCode: z.string() });
 const pollSchema = z.object({ status: z.string(), credential: z.string().optional() });
@@ -18,7 +19,7 @@ describe("CLI authorization PostgreSQL state machine", () => {
   let databaseUrl: string;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
     databaseUrl = postgres.getConnectionUri();
     database = await createDatabase(databaseUrl);
     await sql(

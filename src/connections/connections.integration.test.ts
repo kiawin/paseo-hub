@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import type { DatabaseRuntime, QueryHandle } from "../db/runtime/index.js";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
@@ -18,6 +18,7 @@ import type { ProviderRegistration } from "../providers/registration.js";
 import { MemoryDiscordBotClient } from "../triggers/discord/memory-bot.js";
 import { FakeGitHub, fakeGitHubConnectionClient } from "../test-utils/fake-github.js";
 import { z } from "zod";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const TEST_WEBHOOK_SECRET = "provider-registration-test-secret";
 const HUB = "https://hub.example.test";
@@ -42,7 +43,7 @@ describe("provider connection facades PostgreSQL authority", () => {
   let githubRepositories: TestGitHubRepositories;
 
   beforeEach(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
     database = await createDatabase(postgres.getConnectionUri());
     pool = await createPostgresPool(postgres.getConnectionUri());
     await seedAccount(pool, "acme", "owner");

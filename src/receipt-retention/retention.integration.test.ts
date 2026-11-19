@@ -5,14 +5,15 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { embeddedDatabaseRuntime } from "../db/runtime/index.js";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresTestRuntime } from "../db/test-utils/runtime.js";
 import { ReceiptRetention } from "./index.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 describe("unhandled receipt retention", () => {
   let postgres: StartedPostgreSqlContainer;
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
   afterAll(async () => {
     await postgres?.stop();

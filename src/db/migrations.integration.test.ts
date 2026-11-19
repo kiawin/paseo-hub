@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
 
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { postgresDatabaseRuntime } from "./runtime/index.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
 import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
@@ -28,6 +28,7 @@ import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { EntitlementsService } from "../entitlements/service.js";
 import { migrateLegacyProjectTriggers } from "../triggers/migration.js";
 import type { MigrateProjectTriggersInput } from "./types.js";
+import { startPostgresContainer } from "./test-utils/postgres-container.js";
 
 const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
@@ -46,7 +47,7 @@ describe("database migration application", () => {
   let postgres: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
 
   afterAll(async () => {

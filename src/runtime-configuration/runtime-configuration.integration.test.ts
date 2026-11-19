@@ -4,9 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "vitest";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { embeddedDatabaseRuntime, postgresDatabaseRuntime } from "../db/runtime/index.js";
 import { createRuntimeConfiguration } from "./index.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const roots: string[] = [];
 
@@ -32,7 +32,7 @@ describe("runtime configuration", () => {
   });
 
   it("atomically persists one secret across independent PostgreSQL runtime owners", async () => {
-    const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    const postgres = await startPostgresContainer();
     const databaseUrl = postgres.getConnectionUri();
     const migrationOwner = await postgresDatabaseRuntime(databaseUrl);
     await migrationOwner.runtime.migrate();

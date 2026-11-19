@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { describe, it } from "vitest";
 import { createDatabase } from "./pg.js";
 import { postgresDatabaseRuntime } from "./runtime/index.js";
 import type { DatabaseRuntimeBundle, TransactionHandle } from "./runtime/index.js";
 import type { Locks } from "./runtime/locks/index.js";
 import type { Database } from "./types.js";
+import { startPostgresContainer } from "./test-utils/postgres-container.js";
 
 const START_ACCESS = {
   sessionId: "session",
@@ -25,7 +25,7 @@ const LINEAR_EXTERNAL_LOCK_KEY = JSON.stringify([
 
 describe("Linear token refresh persistence", () => {
   it("serializes an expired refresh with OAuth rebind on the canonical transaction lock", async () => {
-    const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    const postgres = await startPostgresContainer();
     const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
     try {
       await seedAuthority(bundle);
