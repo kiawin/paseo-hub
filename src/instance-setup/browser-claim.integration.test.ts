@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { z } from "zod";
 import {
   createDatabase,
@@ -15,6 +15,7 @@ import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { RegistrationAdmissionError } from "../auth/registration-admission.js";
 import type { InitialOperator } from "./index.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const ORIGIN = "http://localhost:3000";
 
@@ -40,7 +41,7 @@ describe("first-run claim at the browser boundary", () => {
   let postgres: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
 
   afterAll(async () => {

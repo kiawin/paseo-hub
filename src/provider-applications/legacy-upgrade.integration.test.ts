@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { PGlite } from "@electric-sql/pglite";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { afterEach, describe, it } from "vitest";
@@ -22,6 +21,7 @@ import {
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const roots: string[] = [];
 const migrations = readMigrationFiles({ migrationsFolder: join(process.cwd(), "drizzle") });
@@ -188,7 +188,7 @@ async function legacyDatabase(engine: "PGlite" | "PostgreSQL"): Promise<{
     await seedLegacyConnections(bundle);
     return { bundle, close: () => bundle.runtime.close() };
   }
-  const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+  const postgres = await startPostgresContainer();
   const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
   await applyPostgresMigrationsBeforeProviderApplications(bundle);
   await seedLegacyConnections(bundle);

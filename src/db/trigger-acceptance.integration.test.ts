@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresQueryRuntime, createPostgresTestRuntime } from "./test-utils/runtime.js";
 import { createDatabase } from "./test-utils/runtime.js";
+import { startPostgresContainer } from "./test-utils/postgres-container.js";
 import { activityQuery } from "../activity/query-contract.js";
 
 const UNMATCHED_EVER = activityQuery({ view: "unmatched", range: "all" });
@@ -13,7 +14,7 @@ describe("trigger acceptance persistence", () => {
   let databaseUrl: string;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
     databaseUrl = postgres.getConnectionUri();
   }, 120_000);
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { Writable } from "node:stream";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -10,6 +10,7 @@ import { reportFailure, runWithFailureTracking } from "../../../failures/index.j
 import { createLogger } from "../../../logger.js";
 import type { TransactionHandle } from "../index.js";
 import { createPool, createPostgresRuntime } from "./postgres.js";
+import { startPostgresContainer } from "../../test-utils/postgres-container.js";
 
 const diagnosticSchema = z.object({
   phase: z.enum(["acquire", "query", "idle", "checkedOut"]),
@@ -60,9 +61,9 @@ function capture() {
 describe("PostgreSQL failure diagnostics", () => {
   let postgres: StartedPostgreSqlContainer;
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine")
-      .withPassword("private-db-password-canary")
-      .start();
+    postgres = await startPostgresContainer((container) =>
+      container.withPassword("private-db-password-canary"),
+    );
   }, 120_000);
   afterAll(async () => {
     await postgres?.stop();
