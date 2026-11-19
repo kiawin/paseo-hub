@@ -1338,7 +1338,10 @@ export class DaemonDispatchLifecycle {
       this.dispatchTimeoutMs,
       (callback, delayMs) => this.scheduleDeadline(async () => callback(), delayMs),
     );
-    if (completed) await this.options.database.completeHubAction(execution.id, action);
+    if (!completed) return;
+    await this.options.database.completeHubAction(execution.id, action);
+    // Recovery can complete the action before the idle handler that would release the observation.
+    this.releaseExecutionResources(execution.id);
   }
 
   private async notifyMachineTerminated(
