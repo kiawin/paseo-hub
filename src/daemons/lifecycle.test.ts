@@ -393,6 +393,27 @@ describe("durable Hub action acknowledgement state", () => {
     assert.notEqual(execution?.hubActionCompletedAt, null);
     await fixture.lifecycle.stop();
   });
+
+  it("stops observing the agent when recovery, not the idle handler, completes the archive", async () => {
+    // The idle handler records idle_at, then marks the action ready. Recovery can mark it ready in
+    // between, so the idle handler finds nothing to do and the archive completes through recovery.
+    const fixture = await acknowledgementFixture();
+    for (const acknowledgement of [
+      { kind: "finish_execution", status: "completed", observedAt: ACKNOWLEDGED_AT },
+      { kind: "terminal", observedAt: ACKNOWLEDGED_AT },
+      { kind: "idle", observedAt: ACKNOWLEDGED_AT },
+    ] as const) {
+      await fixture.database.recordAgentExecutionHubAcknowledgement(EXECUTION_ID, acknowledgement);
+    }
+
+    await fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+
+    const execution = await fixture.database.findAgentExecutionById(EXECUTION_ID);
+    assert.deepEqual(fixture.connection.actions, ["archive"]);
+    assert.notEqual(execution?.hubActionCompletedAt, null);
+    assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 0);
+    await fixture.lifecycle.stop();
+  });
 });
 
 async function acknowledgementFixture() {
