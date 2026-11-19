@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { afterEach, beforeEach, describe, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
+import { SharedPostgres, type TestPostgres } from "../db/test-utils/shared-postgres.js";
 import type { DatabaseRuntime, QueryHandle } from "../db/runtime/index.js";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { createDatabase, createPostgresPool } from "../db/test-utils/runtime.js";
@@ -18,7 +18,6 @@ import type { ProviderRegistration } from "../providers/registration.js";
 import { MemoryDiscordBotClient } from "../triggers/discord/memory-bot.js";
 import { FakeGitHub, fakeGitHubConnectionClient } from "../test-utils/fake-github.js";
 import { z } from "zod";
-import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const TEST_WEBHOOK_SECRET = "provider-registration-test-secret";
 const HUB = "https://hub.example.test";
@@ -33,7 +32,8 @@ interface ProviderFixture {
 }
 
 describe("provider connection facades PostgreSQL authority", () => {
-  let postgres: StartedPostgreSqlContainer;
+  let shared: SharedPostgres;
+  let postgres: TestPostgres;
   let pool: DatabaseRuntime;
   let database: Database;
   let auth: ConnectionAuth;
@@ -42,8 +42,16 @@ describe("provider connection facades PostgreSQL authority", () => {
   let connections: ProviderFixture;
   let githubRepositories: TestGitHubRepositories;
 
+  beforeAll(async () => {
+    shared = await SharedPostgres.start();
+  }, 120_000);
+
+  afterAll(async () => {
+    await shared?.stop();
+  }, 120_000);
+
   beforeEach(async () => {
-    postgres = await startPostgresContainer();
+    postgres = await shared.database();
     database = await createDatabase(postgres.getConnectionUri());
     pool = await createPostgresPool(postgres.getConnectionUri());
     await seedAccount(pool, "acme", "owner");
