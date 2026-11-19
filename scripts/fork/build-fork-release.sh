@@ -21,6 +21,13 @@ FORK_ID="${PASEO_HUB_FORK_ID:-kiawin}"
 # each starting Postgres containers starve each other and time out; half the
 # cores keeps the suite reliable. Accepts a count or a percentage.
 TEST_WORKERS="${PASEO_HUB_FORK_TEST_WORKERS:-50%}"
+# On a workstation, a Postgres test container now and then misses the port-wait
+# timeout, which fails one test in an otherwise green run. Retrying a failed test
+# absorbs that; a real failure still fails every attempt. 0 turns retries off.
+TEST_RETRY="${PASEO_HUB_FORK_TEST_RETRY:-2}"
+case "$TEST_RETRY" in
+  ''|*[!0-9]*) echo "PASEO_HUB_FORK_TEST_RETRY must be a whole number: $TEST_RETRY" >&2; exit 2 ;;
+esac
 # The lockfile resolves every package on the public registry. A user-level
 # registry (a private mirror with an expired token, say) would break npm ci.
 export npm_config_registry="${PASEO_HUB_FORK_NPM_REGISTRY:-https://registry.npmjs.org/}"
@@ -129,8 +136,8 @@ npm ci --no-audit --no-fund
 log "build"
 npm run build
 
-log "test (max $TEST_WORKERS workers)"
-npm test -- --maxWorkers="$TEST_WORKERS"
+log "test (max $TEST_WORKERS workers, up to $TEST_RETRY retries per failed test)"
+npm test -- --maxWorkers="$TEST_WORKERS" --retry="$TEST_RETRY"
 
 # ---------------------------------------------------------------------------
 # 4. Pack
