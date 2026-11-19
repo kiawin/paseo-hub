@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import type { DatabaseRuntime } from "../../db/runtime/index.js";
 import { createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
 import { z } from "zod";
@@ -17,6 +17,7 @@ import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 import { currentProjectConfigurationFiles } from "../../test-utils/current-project-configuration.js";
+import { startPostgresContainer } from "../../db/test-utils/postgres-container.js";
 
 const exec = promisify(execFile);
 const HUB_ROOT = process.cwd();
@@ -1603,7 +1604,7 @@ ${this.failureArtifacts()}`,
     // Docker publishes container ports from the same ephemeral range that
     // `availablePort()` draws from, and a reserved port is free again until its
     // child binds it. Start the container first so it cannot take a reserved port.
-    this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    this.postgres = await startPostgresContainer();
     this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     const [hubPort, proxyPort, daemonPort] = await Promise.all([
       availablePort(),

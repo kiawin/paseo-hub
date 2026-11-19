@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { createDatabase } from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
 import { EntitlementDenied, UNLIMITED_TEMPLATE } from "./catalog.js";
 import { EntitlementsService } from "./service.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 describe("EntitlementsService.consume against PostgreSQL", () => {
   let postgres: StartedPostgreSqlContainer;
   let database: Database;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
     database = await createDatabase(postgres.getConnectionUri());
   }, 120_000);
 

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { describe, it } from "vitest";
 import { embeddedDatabaseRuntime, postgresDatabaseRuntime } from "../index.js";
 import type { DatabaseRuntimeBundle } from "../index.js";
+import { startPostgresContainer } from "../../test-utils/postgres-container.js";
 
 describe("database runtime locks", () => {
   it("serializes concurrent embedded callers holding the same key", async () => {
@@ -20,7 +20,7 @@ describe("database runtime locks", () => {
   });
 
   it("serializes concurrent Postgres callers holding the same key", async () => {
-    const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    const postgres = await startPostgresContainer();
     const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
     try {
       await assertSameKeySerializes(bundle);

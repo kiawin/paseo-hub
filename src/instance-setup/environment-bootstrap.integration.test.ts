@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { z } from "zod";
 import {
@@ -14,6 +14,7 @@ import { composeEntitlements } from "../auth/entitlements.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { postgresDatabaseRuntime, type DatabaseRuntimeBundle } from "../db/runtime/index.js";
 import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const policy: InstanceAuthPolicy = {
   registrationMode: "invite_only",
@@ -30,7 +31,7 @@ describe("instance bootstrap and first-login boundary", () => {
   let databaseUrl: string;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
     databaseUrl = postgres.getConnectionUri();
   }, 120_000);
 

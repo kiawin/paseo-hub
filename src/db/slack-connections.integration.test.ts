@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, describe, it } from "vitest";
 import { createProviderApplicationStore } from "../provider-applications/index.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
@@ -12,6 +11,7 @@ import {
   postgresDatabaseRuntime,
   type DatabaseRuntimeBundle,
 } from "./runtime/index.js";
+import { startPostgresContainer } from "./test-utils/postgres-container.js";
 
 const roots: string[] = [];
 
@@ -32,7 +32,7 @@ describe("Slack connections of several apps in one workspace", () => {
   });
 
   it("keeps each app's connection apart and serializes workspace installs in PostgreSQL", async () => {
-    const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    const postgres = await startPostgresContainer();
     try {
       const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
       try {

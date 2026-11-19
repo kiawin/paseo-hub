@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { createApplicationRuntime } from "../application-runtime.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
@@ -26,6 +26,7 @@ import {
   ValidatedConfigurationSchema,
 } from "./contracts.js";
 import { loadBuiltStartServer, type BuiltStartServer } from "../server/build.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const builtServerTests = describe.runIf(process.env["RUN_BUILT_PUBLIC_API_TESTS"] === "1");
 
@@ -37,7 +38,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
   let secrets: Record<"organization-a" | "organization-b", string>;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
     databaseUrl = postgres.getConnectionUri();
     const database = await createDatabase(databaseUrl);
     const client = await createPostgresQueryRuntime(databaseUrl);

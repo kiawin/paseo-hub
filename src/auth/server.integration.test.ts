@@ -2,7 +2,7 @@ import { createExecutionLauncher } from "../agent-executions/launcher.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import type { DatabaseRuntime } from "../db/runtime/index.js";
 import { z } from "zod";
@@ -26,6 +26,7 @@ import type { ProviderConnectionRegistration } from "../providers/registration.j
 import { FakeGitHub, fakeGitHubConnectionClient } from "../test-utils/fake-github.js";
 import { API_KEY_SCOPES } from "./api-key-contract.js";
 import type { InvitationEmail, InvitationMailer } from "../invitations/index.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 type ActiveState = ActiveAccountState;
 
@@ -33,7 +34,7 @@ describe("account and organization boundary", () => {
   let postgres: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
 
   afterAll(async () => {

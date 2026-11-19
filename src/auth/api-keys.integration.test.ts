@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import {
   createDatabase,
@@ -15,6 +15,7 @@ import { z } from "zod";
 import { createHubApplication } from "../app.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uuid() }) });
 
@@ -26,7 +27,7 @@ describe("organization API-key boundary", () => {
   let databaseUrl: string;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
     databaseUrl = postgres.getConnectionUri();
     authDatabase = await createDatabase(databaseUrl);
     const client = await createPostgresQueryRuntime(databaseUrl);

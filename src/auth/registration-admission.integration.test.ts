@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import {
   createDatabase,
@@ -10,6 +10,7 @@ import {
 } from "../db/test-utils/runtime.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { composeEntitlements } from "./entitlements.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 import { readSocialSignIn, type SocialSignIn } from "./social-sign-in.js";
 import { z } from "zod";
 
@@ -17,7 +18,7 @@ describe("registration policy boundary", () => {
   let postgres: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
 
   afterAll(async () => {

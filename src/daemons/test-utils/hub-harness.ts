@@ -4,7 +4,7 @@ import type { IncomingMessage } from "node:http";
 import type { Server } from "node:http";
 import { createServer } from "node:net";
 import type { Duplex } from "node:stream";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
 import { createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
 import { dump } from "js-yaml";
@@ -60,6 +60,7 @@ import {
 import type { GitHubAuthorityRegistration } from "../../providers/registration.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 import type { HubBundleFile } from "../../config/bundle.js";
+import { startPostgresContainer } from "../../db/test-utils/postgres-container.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
 const HUB_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -247,7 +248,7 @@ export class HubHarness {
   static async startupFailureRollsBack(): Promise<boolean> {
     const harness = new HubHarness();
     try {
-      harness.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+      harness.postgres = await startPostgresContainer();
       harness.database = await createDatabase(harness.postgres.getConnectionUri());
       throw new Error("startup interrupted");
     } catch {
@@ -1659,7 +1660,7 @@ export class HubHarness {
   }
 
   private async startResources(): Promise<void> {
-    this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    this.postgres = await startPostgresContainer();
     this.database = await createDatabase(this.postgres.getConnectionUri());
     const client = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
 

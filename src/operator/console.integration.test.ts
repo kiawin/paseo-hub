@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { z } from "zod";
 import { composeEntitlements, type ComposedEntitlements } from "../auth/entitlements.js";
@@ -18,6 +18,7 @@ import {
   type OperatorBilling,
   type OperatorBillingReader,
 } from "./console.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 // The operator guard is the real authorization: hiding the nav is presentation, this refuses
 // server-side. These tests build a real Better Auth server over real Postgres so the
@@ -30,7 +31,7 @@ describe("OperatorConsole authorization", () => {
   let postgres: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
 
   afterAll(async () => {

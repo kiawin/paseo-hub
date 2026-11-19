@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, describe, it } from "vitest";
 import {
   embeddedDatabaseRuntime,
@@ -16,6 +15,7 @@ import {
   createProviderApplicationStore,
   type ProviderApplicationConfiguration,
 } from "./index.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const roots: string[] = [];
 
@@ -48,7 +48,7 @@ describe("provider application persistence", () => {
   });
 
   it("persists and serializes concurrent first saves in PostgreSQL", async () => {
-    const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    const postgres = await startPostgresContainer();
     try {
       const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
       await exercisePersistence(bundle);
