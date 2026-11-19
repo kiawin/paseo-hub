@@ -99,14 +99,15 @@ Rerunning on a commit that already has a release verifies that the existing tag 
 that commit and marks it latest again; it never replaces assets. The last line of output is
 `fork_version=<version>`.
 
-| Variable                      | Default                                  |
-| ----------------------------- | ---------------------------------------- |
-| `PASEO_HUB_FORK_SRC`          | The checkout holding the script          |
-| `PASEO_HUB_FORK_REPO`         | `kiawin/paseo-hub`                       |
-| `PASEO_HUB_FORK_ID`           | `kiawin`                                 |
-| `PASEO_HUB_FORK_NPM_REGISTRY` | `https://registry.npmjs.org/`            |
-| `PASEO_HUB_FORK_HEALTH_PORT`  | A free port picked at start              |
-| `PASEO_HUB_FORK_TEST_WORKERS` | `50%` (a count, or a share of the cores) |
+| Variable                      | Default                                     |
+| ----------------------------- | ------------------------------------------- |
+| `PASEO_HUB_FORK_SRC`          | The checkout holding the script             |
+| `PASEO_HUB_FORK_REPO`         | `kiawin/paseo-hub`                          |
+| `PASEO_HUB_FORK_ID`           | `kiawin`                                    |
+| `PASEO_HUB_FORK_NPM_REGISTRY` | `https://registry.npmjs.org/`               |
+| `PASEO_HUB_FORK_HEALTH_PORT`  | A free port picked at start                 |
+| `PASEO_HUB_FORK_TEST_WORKERS` | `50%` (a count, or a share of the cores)    |
+| `PASEO_HUB_FORK_TEST_RETRY`   | `2` (retries per failed test; `0` for none) |
 
 `--skip-health-check` skips step 3 for a host that cannot start the server. It publishes an
 unverified build; use it knowingly.
