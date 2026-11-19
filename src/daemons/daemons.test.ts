@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
+import { SharedPostgres } from "../db/test-utils/shared-postgres.js";
 import { DaemonDispatchFailure } from "./index.js";
 import { DaemonResponseLostError } from "./protocol.js";
 import { ENROLLMENT_LIFETIME_MS } from "./registration.js";
@@ -7,9 +8,16 @@ import { HubHarness } from "./test-utils/hub-harness.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 
 describe("daemon enrollment and execution", () => {
+  let postgres: SharedPostgres;
   let hub: HubHarness;
+  beforeAll(async () => {
+    postgres = await SharedPostgres.start();
+  }, 120_000);
+  afterAll(async () => {
+    await postgres?.stop();
+  }, 120_000);
   beforeEach(async () => {
-    hub = await HubHarness.start();
+    hub = await HubHarness.start(postgres);
   }, 120_000);
   afterEach(async () => {
     await hub.stop();

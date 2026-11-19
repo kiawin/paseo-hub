@@ -4,7 +4,7 @@ import type { IncomingMessage } from "node:http";
 import type { Server } from "node:http";
 import { createServer } from "node:net";
 import type { Duplex } from "node:stream";
-import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { type SharedPostgres, type TestPostgres } from "../../db/test-utils/shared-postgres.js";
 import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
 import { createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
 import { dump } from "js-yaml";
@@ -169,7 +169,7 @@ const ExecutionSessionRequestSchema = z.object({
 });
 
 export class HubHarness {
-  private postgres: StartedPostgreSqlContainer | undefined;
+  private postgres: TestPostgres | undefined;
   private database: Database | undefined;
   private readonly entitlements = createUnlimitedEntitlementsService();
   private server: Server | undefined;
@@ -234,10 +234,14 @@ export class HubHarness {
   private authorityMintPermanentlyUnresolved = false;
   private executionAuthority!: ExecutionAuthority;
 
-  static async start(): Promise<HubHarness> {
+  /**
+   * Starts a Hub on its own database. Pass the file's shared Postgres to use a fresh database in
+   * it; without one, the harness starts and stops a container of its own.
+   */
+  static async start(postgres?: SharedPostgres): Promise<HubHarness> {
     const harness = new HubHarness();
     try {
-      await harness.startResources();
+      await harness.startResources(postgres);
       return harness;
     } catch (error) {
       await harness.stop();
@@ -1659,8 +1663,8 @@ export class HubHarness {
     return { first, second };
   }
 
-  private async startResources(): Promise<void> {
-    this.postgres = await startPostgresContainer();
+  private async startResources(shared: SharedPostgres | undefined): Promise<void> {
+    this.postgres = shared === undefined ? await startPostgresContainer() : await shared.database();
     this.database = await createDatabase(this.postgres.getConnectionUri());
     const client = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
 
