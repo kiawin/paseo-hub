@@ -3,13 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "./db/test-utils/runtime.js";
 import { HubHarness } from "./daemons/test-utils/hub-harness.js";
 import { createDatabase, testDatabaseLocks, testDatabaseRuntime } from "./db/test-utils/runtime.js";
 import { createAuthServer } from "./auth/server.js";
 import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { startProductionRuntime, stopProductionRuntime } from "./index.js";
+import { startPostgresContainer } from "./db/test-utils/postgres-container.js";
 
 describe("production Hub runtime", () => {
   let hub: HubHarness;
@@ -43,7 +44,7 @@ describe("production Hub cold start", () => {
   const originalDirectory = process.cwd();
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
 
   beforeEach(async () => {

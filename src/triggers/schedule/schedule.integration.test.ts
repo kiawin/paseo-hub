@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import {
   embeddedDatabaseRuntime,
@@ -19,10 +19,11 @@ import { createUnlimitedEntitlementsService } from "../../entitlements/test-util
 import { scheduleYaml } from "./test-fixture.js";
 import { createScheduleProvider } from "./index.js";
 import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
+import { startPostgresContainer } from "../../db/test-utils/postgres-container.js";
 
 let postgres: StartedPostgreSqlContainer;
 beforeAll(async () => {
-  postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+  postgres = await startPostgresContainer();
 }, 120_000);
 afterAll(async () => {
   await postgres?.stop();

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { postgresDatabaseRuntime, type DatabaseRuntime } from "../db/runtime/index.js";
 import type { Locks } from "../db/runtime/locks/index.js";
 import { createDatabase, createPostgresPool } from "../db/test-utils/runtime.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
 import { InstanceSetup, type InitialOperator } from "./index.js";
+import { startPostgresContainer } from "../db/test-utils/postgres-container.js";
 
 const policy: InstanceAuthPolicy = {
   registrationMode: "invite_only",
@@ -23,7 +24,7 @@ describe("interactive instance setup", () => {
   let postgres: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    postgres = await startPostgresContainer();
   }, 120_000);
 
   afterAll(async () => {
