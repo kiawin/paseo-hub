@@ -5,7 +5,12 @@ import type { QueryRow } from "../runtime/index.js";
 export type UpgradeQuery = (text: string, values?: unknown[]) => Promise<{ rows: QueryRow[] }>;
 
 /** The migration that keys provider settings by app, so Slack can run more than one. */
-export const MULTI_SLACK_APPS_MIGRATION = "0050_multi_slack_apps";
+export const MULTI_SLACK_APPS_MIGRATION = "0051_multi_slack_apps";
+/**
+ * The journal "when" the same migration had as 0050, before an upstream sync renumbered it.
+ * A database upgraded through those fork releases recorded this value.
+ */
+export const MULTI_SLACK_APPS_PRE_RENUMBER_WHEN = 1793624999024;
 /** The migration just before it: the single-app shape the upgrade starts from. */
 export const SINGLE_APP_MIGRATION = "0049_github_installation_syncs";
 

@@ -33,6 +33,11 @@ gh pr create --repo kiawin/paseo-hub --base main --head sync/kiawin-paseo-hub \
 - Resolve each conflict inside the fork commit being replayed, with the smallest edit. Do not add
   a separate conflict-resolution or merge commit, and do not run a formatter while resolving.
 - A fork commit the rebase drops means upstream accepted it. That is the goal.
+- When upstream adds a migration with the same number as a fork migration, the fork's migration is
+  renumbered and gets a newer journal `when`. Hub runs every migration whose `when` is newer than
+  the last one it recorded, so a database that already applied the fork's migration runs it again.
+  Every fork migration must therefore be safe to run twice (`IF NOT EXISTS`, `IF EXISTS`, guarded
+  `DO` blocks), and its upgrade test must cover a database that applied it under the old number.
 - Always pass `--repo kiawin/paseo-hub` to `gh`; otherwise it targets the upstream parent.
 - CI also runs on every push to `sync/**`. The sync branch is `main` rebased, so its pull request
   often conflicts with `main`, and GitHub does not run `pull_request` workflows on a conflicting
