@@ -4,6 +4,41 @@ import { classifyFailure, retryAdvice } from "../../failures/index.js";
 import { createSlackBotClient, SlackApiError } from "./client.js";
 
 describe("Slack Web API client", () => {
+  it("hydrates message blocks from conversations.replies when the event omitted them", async () => {
+    let requestedUrl = "";
+    const client = createSlackBotClient({
+      tokenForConnection: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input) => {
+        requestedUrl = requestUrl(input);
+        return Response.json({
+          ok: true,
+          messages: [
+            {
+              ts: "1700000000.000002",
+              text: "with interactive elements",
+              user: "U1",
+              blocks: [{ type: "table", rows: [[{ type: "raw_text", text: "cell" }]] }],
+            },
+          ],
+        });
+      },
+    });
+
+    const message = await client.readMessage?.({
+      organizationId: "org-1",
+      connectionId: "C-1",
+      channelId: "C1",
+      threadTs: "1700000000.000000",
+      messageTs: "1700000000.000002",
+    });
+
+    assert.equal(
+      requestedUrl,
+      "https://slack.com/api/conversations.replies?channel=C1&ts=1700000000.000000&latest=1700000000.000002&inclusive=true&limit=100",
+    );
+    assert.equal(message?.content, "cell");
+  });
+
   it("looks up an authored username with the workspace bot token", async () => {
     let request: { url: string; method: string | undefined } | undefined;
     const client = createSlackBotClient({

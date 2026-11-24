@@ -125,11 +125,17 @@ export function createSlackTriggerProvider(options: {
     name: "slack",
     eventNames: ["slack.mention"],
     async match(trigger) {
-      const rawEvent = NormalizedSlackMentionEventSchema.parse(trigger.payload);
+      const parsedEvent = NormalizedSlackMentionEventSchema.parse(trigger.payload);
       const connectionId = trigger.connectionId;
       if (connectionId === undefined || connectionId === null) return "configuration_unavailable";
       const botUserId = await options.botUserIdForConnection(trigger.organizationId, connectionId);
       if (botUserId === undefined) return "configuration_unavailable";
+      const rawEvent = await hydrateMentionBlocks(
+        parsedEvent,
+        trigger.organizationId,
+        connectionId,
+        options.client,
+      );
       const stored = await options
         .configurationStoreForProject(trigger.projectId)
         .getRevision(trigger.configurationRevisionId);
@@ -352,6 +358,33 @@ export function createSlackTriggerProvider(options: {
       return reactionState;
     },
   };
+}
+
+async function hydrateMentionBlocks(
+  event: NormalizedSlackMentionEvent,
+  organizationId: string,
+  connectionId: string,
+  client: SlackBotClient,
+): Promise<NormalizedSlackMentionEvent> {
+  if (
+    event.hasBlocks === true ||
+    !/with interactive elements\s*$/iu.test(event.content) ||
+    client.readMessage === undefined
+  )
+    return event;
+  try {
+    const hydrated = await client.readMessage({
+      organizationId,
+      connectionId,
+      channelId: event.channelId,
+      threadTs: event.threadTs ?? event.messageTs,
+      messageTs: event.messageTs,
+    });
+    return hydrated === undefined ? event : { ...event, content: hydrated.content };
+  } catch {
+    // The event's text remains usable when Slack history is unavailable.
+    return event;
+  }
 }
 
 async function enrichSlackAuthor(

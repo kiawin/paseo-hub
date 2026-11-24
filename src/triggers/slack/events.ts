@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { flattenSlackMessage } from "./blocks.js";
 
 const SlackIdSchema = z.string().min(1).max(255);
 const SlackTimestampSchema = z.string().regex(/^\d+\.\d+$/u);
@@ -51,6 +52,7 @@ const SlackAppMentionSchema = z
           .passthrough(),
       )
       .optional(),
+    blocks: z.array(z.unknown()).optional(),
   })
   .passthrough();
 
@@ -65,6 +67,7 @@ export const NormalizedSlackMentionEventSchema = z.object({
   eventTs: SlackTimestampSchema,
   eventTime: z.number().int().nonnegative(),
   content: z.string(),
+  hasBlocks: z.boolean().optional(),
   author: z.object({ id: SlackIdSchema, username: z.string().min(1).max(255).optional() }),
   createdAt: z.string(),
   attachments: z.array(SlackAttachmentMetadataSchema).default([]),
@@ -89,7 +92,10 @@ export function normalizeSlackEvent(
     threadTs: mention.data.thread_ts ?? null,
     eventTs: mention.data.event_ts,
     eventTime: envelope.event_time,
-    content: mention.data.text,
+    content: flattenSlackMessage(mention.data.text, mention.data.blocks),
+    ...(mention.data.blocks === undefined || mention.data.blocks.length === 0
+      ? {}
+      : { hasBlocks: true }),
     author: { id: mention.data.user },
     createdAt: new Date(Number(mention.data.ts) * 1_000).toISOString(),
     attachments: (mention.data.files ?? []).map((file) => ({
