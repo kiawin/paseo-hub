@@ -76,6 +76,43 @@ describe("Slack Phase 1 trigger provider", () => {
     assert.deepEqual(client.userLookups, []);
   });
 
+  it("hydrates a missing mention block before building the trigger body", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const client = new RecordingSlackClient({
+      hydratedMessage: {
+        ts: "1700000000.000001",
+        createdAt: new Date(1_700_000_000_000).toISOString(),
+        content: "<@UBOT> deploy now\nService | Status\nAPI | Degraded",
+        author: { id: "U1" },
+        attachments: [],
+      },
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForConnection: () => Promise.resolve("UBOT"),
+      client,
+    });
+
+    const match = (
+      await provider.match(
+        external(project.id, revision.id, {
+          content: "<@UBOT> deploy now, with interactive elements",
+        }),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(
+      match.triggerContext.event.slack.trigger_message.body,
+      "deploy now\nService | Status\nAPI | Degraded",
+    );
+    assert.equal(client.messageReads, 1);
+  });
+
   it("resolves the authored Slack username once before matching", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
@@ -1085,6 +1122,7 @@ class RecordingSlackClient implements SlackBotClient {
   }> = [];
   threadReads: string[] = [];
   userLookups: string[] = [];
+  messageReads = 0;
   /** The connection each thread read and user lookup went through. */
   connections: string[] = [];
   private readonly threadMessages: SlackThreadMessage[];
@@ -1097,6 +1135,7 @@ class RecordingSlackClient implements SlackBotClient {
       failThreadRead?: boolean;
       threadComplete?: boolean;
       username?: string;
+      hydratedMessage?: SlackThreadMessage;
     } = {},
   ) {
     this.threadMessages = options.threadMessages ?? [];
@@ -1149,5 +1188,10 @@ class RecordingSlackClient implements SlackBotClient {
       complete: this.options.threadComplete ?? true,
       messages: this.threadMessages,
     });
+  }
+
+  readMessage(): Promise<SlackThreadMessage | undefined> {
+    this.messageReads += 1;
+    return Promise.resolve(this.options.hydratedMessage);
   }
 }

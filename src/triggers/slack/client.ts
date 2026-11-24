@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { fetchAttachment } from "../../attachments/download.js";
 import { reportFailure } from "../../failures/index.js";
+import { flattenSlackMessage } from "./blocks.js";
 
 const SlackApiResponseSchema = z
   .object({ ok: z.boolean(), error: z.string().optional() })
@@ -21,6 +22,7 @@ const SlackThreadMessageSchema = z
     user: z.string().min(1).max(255).optional(),
     bot_id: z.string().min(1).max(255).optional(),
     files: z.array(SlackFileSchema).optional(),
+    blocks: z.array(z.unknown()).optional(),
   })
   .passthrough();
 const SlackThreadRepliesSchema = SlackApiResponseSchema.extend({
@@ -93,6 +95,13 @@ export interface SlackBotClient {
     threadTs: string;
     beforeTs: string;
   }): Promise<SlackThreadReadResult>;
+  readMessage?(input: {
+    organizationId: string;
+    connectionId: string;
+    channelId: string;
+    threadTs: string;
+    messageTs: string;
+  }): Promise<SlackThreadMessage | undefined>;
   lookupUserName?(input: {
     organizationId: string;
     connectionId: string;
@@ -239,6 +248,27 @@ export function createSlackBotClient(options: {
     };
   }
 
+  async function readMessage(input: {
+    organizationId: string;
+    connectionId: string;
+    channelId: string;
+    threadTs: string;
+    messageTs: string;
+  }): Promise<SlackThreadMessage | undefined> {
+    const result = SlackThreadRepliesSchema.parse(
+      await queryJson(input.organizationId, input.connectionId, "conversations.replies", {
+        channel: input.channelId,
+        ts: input.threadTs,
+        latest: input.messageTs,
+        inclusive: "true",
+        limit: "100",
+      }),
+    );
+    if (!result.ok) throw new SlackApiError(result.error);
+    const message = result.messages?.find(({ ts }) => ts === input.messageTs);
+    return message === undefined ? undefined : normalizeThreadMessage(message);
+  }
+
   async function downloadAttachment(input: {
     organizationId: string;
     connectionId: string;
@@ -312,6 +342,7 @@ export function createSlackBotClient(options: {
         ["no_reaction", ...SLACK_REACTION_TARGET_GONE],
       ),
     readThreadMessages,
+    readMessage,
     lookupUserName,
     downloadAttachment,
   };
@@ -323,7 +354,7 @@ function normalizeThreadMessage(
   return {
     ts: message.ts,
     createdAt: new Date(Number(message.ts) * 1_000).toISOString(),
-    content: message.text,
+    content: flattenSlackMessage(message.text, message.blocks),
     author: { id: message.user ?? message.bot_id ?? "unknown" },
     attachments: (message.files ?? []).map((file) => ({
       id: file.id,

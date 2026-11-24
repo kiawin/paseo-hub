@@ -7,12 +7,42 @@ import {
   routeSlackWebhookRequest,
   verifySlackSignature,
 } from "./webhook.js";
+import { SlackEventCallbackSchema, normalizeSlackEvent } from "./events.js";
 
 const SECRET = "slack-signing-secret";
 const APP_ID = "A123";
 const NOW = 1_700_000_000_000;
 
 describe("Slack webhook", () => {
+  it("normalizes table cells when Slack's text is only the interactive fallback", () => {
+    const envelope = mentionEnvelope();
+    const normalized = normalizeSlackEvent(
+      SlackEventCallbackSchema.parse({
+        ...envelope,
+        event: {
+          ...envelope.event,
+          text: "<@U999> Review, with interactive elements",
+          blocks: [
+            {
+              type: "table",
+              rows: [
+                [
+                  { type: "raw_text", text: "Service" },
+                  { type: "raw_text", text: "Status" },
+                ],
+                [
+                  { type: "raw_text", text: "API" },
+                  { type: "raw_text", text: "Degraded" },
+                ],
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    assert.equal(normalized?.content, "<@U999> Review\nService | Status\nAPI | Degraded");
+  });
+
   it("verifies the exact raw bytes and rejects stale, future, and malformed evidence", () => {
     const timestamp = String(NOW / 1_000);
     const body = new TextEncoder().encode('{"text":"héllo"}');
